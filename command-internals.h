@@ -58,10 +58,3 @@ struct command
     struct command *subshell_command;
   } u;
 };
-
-struct command_stream
-{
-  struct commandNode *head;
-  struct commandNode *tail;
-  struct commandNode *cursor; // initialize to head
-};
