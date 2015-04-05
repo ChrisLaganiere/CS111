@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <string.h>
 
 /* FIXME: You may need to add #include directives, macro definitions,
    static function definitions, etc.  */
@@ -195,6 +196,7 @@ make_tokens (char *char_buffer)
     new_token->next = new_token->prev = NULL;
     new_token->word = NULL;
     new_token->type = type;
+    new_token->line = line;
     if (type == SIMPLE_TOKEN) {
       new_token->word = (char *)checked_malloc(word_length*sizeof(char) + 1);
       int l;
@@ -340,17 +342,126 @@ check_token_syntax (token_t tokens)
 // MARK: identify commands
 
 command_t
-pop(token_t tokens)
+pop_cmd(command_node_t top)
 {
-  token_t top = tokens;
-  tokens = tokens->next;
-  return top;
+  command_t cmd = top->command;
+  top = top->next;
+  return cmd;
 }
 
-command_stream_t
+void
+push_cmd(command_node_t top, command_node_t new_top)
+{
+  new_top->prev = NULL;
+  if (top) {
+    new_top->next = top;
+    top->prev = new_top;
+  } else {
+    new_top->next = NULL;
+  }
+}
+
+command_node_t
+make_command()
+{
+  command_node_t cmd = (command_node *)checked_malloc(sizeof(command_node));
+  cmd->prev = cmd->next = NULL;
+  cmd->command = (command *)checked_malloc(sizeof(command));
+  cmd->command->input = cmd->command->output = NULL;
+  cmd->command->status = -1;
+  return cmd;
+}
+
+command_node_t
+make_simple_command(token_t *command_start)
+{
+  token_t tokens = *command_start;
+  command_node_t simple = make_command();
+  char *word = NULL;
+  size_t words_length = 0;
+  int entered_chars = 0;
+  while (tokens && (tokens->type == SIMPLE_TOKEN || tokens->type == INPUT_TOKEN || tokens->type == OUTPUT_TOKEN))
+  {
+    if (tokens->type == INPUT_TOKEN) {
+      // update command input
+      if (simple->command->output) {
+        // invalid syntax, output already set (command > output < input)
+        fprintf(stderr, "%i: command output must come after command input", tokens->line);
+        exit(1);
+      } else if (tokens->next && tokens->next->type == SIMPLE_TOKEN) {
+        simple->command->input = tokens->word;
+        tokens = tokens->next;
+      } else {
+        fprintf(stderr, "%i: missing command input", tokens->line);
+        exit(1);
+      }
+    } else if (tokens->type == OUTPUT_TOKEN) {
+      // update command output
+      if (tokens->next && tokens->next->type == SIMPLE_TOKEN) {
+        simple->command->output = tokens->word;
+        tokens = tokens->next;
+      } else {
+        fprintf(stderr, "%i: missing command output", tokens->line);
+        exit(1);
+      }
+    } else { 
+      printf("Found simple word: %s \n", tokens->word);
+      // update command words
+      words_length += strlen(tokens->word) + sizeof(char);
+      if (word == NULL) {
+        word = (char *)checked_malloc(words_length);
+      } else {
+        word = (char *)checked_realloc(word, words_length);
+      }
+
+      int read_chars = 0;
+      while (tokens->word[read_chars] != '\0') {
+        word[entered_chars + read_chars] = tokens->word[read_chars];
+        read_chars++;
+      }
+      entered_chars += read_chars;
+      word[entered_chars] = ' ';
+      entered_chars++;
+    }
+    tokens = tokens->next;
+  }
+  word[entered_chars-1] = '\0';
+  printf("Created simple command: %s \n", word);
+  simple->command->u.word = &word;
+
+  *command_start = tokens;
+  return simple;
+}
+
+void
 identify_commands(token_t tokens)
 {
+  command_node_t cmd_stack = NULL;
+  command_node_t op_stack = NULL;
 
+  while (tokens)
+  {
+    // 1. if a simple command, push it onto cmd_stack
+    if (tokens->type == SIMPLE_TOKEN) {
+      command_node_t simple = make_simple_command(&tokens);
+    }
+
+
+    // 2. if it's a "(", push it onto the operator stack
+    // 3. if it's an operator and operator stack is empty
+    //   a. push the operator onto the operator_stack
+    // 4. if it's an operato and operator stack NOT empty
+    //   a. pop all operators with greater or equal precedence off the operator_stack
+    //     for each operator, pop 2 commands off the command stack
+    //     combine into new command and push it onto the command stack
+    //   b. stop when reach an operator with lower precedence or a "("
+    //   c. push new operator onto the operator stack
+    // 5. if it's a ")", pop operators off (similar to 4a.) until a matching "("
+    //   create a subshell command by popping off top command on command stack
+
+    // 8. go back to 1
+    tokens = tokens->next;
+  }
 }
 
 // MARK: make_command_stream implementation
@@ -368,6 +479,7 @@ make_command_stream (int (*get_next_byte) (void *),
   
   list_tokens(tokens);
   check_token_syntax(tokens);
+  identify_commands(tokens);
 
   error (1, 0, "command making not yet implemented");
   return 0;

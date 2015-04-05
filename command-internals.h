@@ -29,13 +29,14 @@ enum command_type
 typedef struct token
 {
   token_type_t type;
+  int line;
   char *word;
   struct token* next;
   struct token* prev;
 } token;
 
 // Data associated with a command.
-struct command
+typedef struct command
 {
   enum command_type type;
 
@@ -57,4 +58,4 @@ struct command
     // for SUBSHELL_COMMAND:
     struct command *subshell_command;
   } u;
-};
+} command;
