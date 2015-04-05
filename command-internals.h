@@ -1,5 +1,21 @@
 // UCLA CS 111 Lab 1 command internals
 
+typedef enum token_type
+  {
+    AND_TOKEN,            // &&
+    SEQUENCE_TOKEN,       // ;
+    OR_TOKEN,             // ||
+    PIPE_TOKEN,           // |
+    SIMPLE_TOKEN,         // any word
+    OPEN_PARENS_TOKEN,    // (
+    CLOSE_PARENS_TOKEN,   // )
+    INPUT_TOKEN,          // <
+    OUTPUT_TOKEN,         // >
+    NEWLINE_TOKEN,        // \n
+    COMMENT_TOKEN,        // #something\n
+    UNKNOWN_TOKEN         // anything else
+  } token_type_t;
+
 enum command_type
   {
     AND_COMMAND,         // A && B
@@ -9,6 +25,14 @@ enum command_type
     SIMPLE_COMMAND,      // a simple command
     SUBSHELL_COMMAND,    // ( A )
   };
+
+typedef struct token
+{
+  token_type_t type;
+  char *word;
+  struct token* next;
+  struct token* prev;
+} token;
 
 // Data associated with a command.
 struct command
@@ -33,4 +57,11 @@ struct command
     // for SUBSHELL_COMMAND:
     struct command *subshell_command;
   } u;
+};
+
+struct command_stream
+{
+  struct commandNode *head;
+  struct commandNode *tail;
+  struct commandNode *cursor; // initialize to head
 };

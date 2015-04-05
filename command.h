@@ -1,10 +1,18 @@
 // UCLA CS 111 Lab 1 command interface
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <sys/types.h>
+
+typedef struct token *token_t;
 
 typedef struct command *command_t;
 typedef struct command_stream *command_stream_t;
 
+char * read_chars(int (*get_next_byte) (void *), void *get_next_byte_argument);
+int simple_char (char a);
+token_t make_tokens (char *char_buffer);
+void list_tokens (token_t tokens);
 /* Create a command stream from GETBYTE and ARG.  A reader of
    the command stream will invoke GETBYTE (ARG) to get the next byte.
    GETBYTE will return the next input byte, or a negative number
