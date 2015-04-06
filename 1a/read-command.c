@@ -339,26 +339,6 @@ check_token_syntax (token_t tokens)
 }
 
 // MARK: identify commands
-command_t
-pop_cmd(command_node_t top)
-{
-  command_t cmd = top->command;
-  top = top->next;
-  top->prev = NULL;
-  return cmd;
-}
-
-void
-push_cmd(command_node_t top, command_node_t new_top)
-{
-  new_top->prev = NULL;
-  if (top) {
-    new_top->next = top;
-    top->prev = new_top;
-  } else {
-    new_top->next = NULL;
-  }
-}
 
 command_node_t
 make_command()
@@ -432,28 +412,168 @@ make_simple_command(token_t *command_start)
   return simple;
 }
 
+command_node_t
+make_operator_command(token_t op, command_node_t first, command_node_t second)
+{
+  command_node_t new_cmd = make_command();
+  command_type_t new_type = SEQUENCE_COMMAND;
+  switch (tokens->type) {
+    case AND_TOKEN:
+      new_type = AND_COMMAND;
+      break;
+    case OR_TOKEN:
+      new_type = OR_COMMAND;
+      break;
+    case PIPE_TOKEN:
+      new_type = PIPE_COMMAND;
+      break;
+    case SEQUENCE_TOKEN:
+      new_type = SEQUENCE_COMMAND;
+      break;
+    default:
+      return NULL;
+  }
+  new_cmd->command->type = new_type;
+  new_cmd->command->u.command[0] = first;
+  new_cmd->command->u.command[1] = second;
+  return new_cmd;
+}
+
+// command stack
+
+void
+push_cmd(command_node_t *head, command_node_t new_top)
+{
+  command_node_t top = *head;
+  new_top->prev = NULL;
+  if (top) {
+    new_top->next = top;
+    top->prev = new_top;
+  } else {
+    new_top->next = NULL;
+  }
+  *head = top;
+}
+
+command_t
+pop_cmd(command_node_t *head)
+{
+  command_node_t top = *head;
+  if (!top) {
+    return NULL;
+  }
+
+  command_t cmd = top->command;
+  if(top->next)
+  {
+    top = top->next;
+    top->prev = NULL;
+  }
+  else {
+    top = NULL;
+  }
+  *head = top;
+  return cmd;
+}
+
+// operator stack
+
+void
+push_tok(token_t *head, token_t new_top)
+{
+  token_t top = *head;
+  new_top->prev = NULL;
+  if (top) {
+    new_top->next = top;
+    top->prev = new_top;
+  } else {
+    new_top->next = NULL;
+  }
+  *head = top;
+}
+
+token_t
+pop_tok(token_t *head)
+{
+  token_t top = *head;
+  if(!top)
+    return NULL;
+  
+  token_t tok = top;
+  if(top->next) {
+    top = top->next;
+    top->prev = NULL;
+  }
+  else
+    top = NULL;
+  *head = top;
+  return tok;
+}
+
+// operator precedence
+int
+operator_precedence(token_t op)
+{
+  if (!op) {
+    return -1;
+  }
+
+  switch (op->type) {
+    case SEQUENCE_TOKEN:
+      return 1;
+    case AND_TOKEN:
+    case OR_TOKEN:
+      return 2;
+    case PIPE_TOKEN:
+      return 3;
+    default:
+      return -1;
+  }
+}
+
 void
 identify_commands(token_t tokens)
 {
   command_node_t cmd_stack = NULL;
-  command_node_t op_stack = NULL;
+  token_t op_stack = NULL;
 
-  while (tokens)
-  {
+  while (tokens) {
     // 1. if a simple command, push it onto cmd_stack
     if (tokens->type == SIMPLE_TOKEN) {
       command_node_t simple = make_simple_command(&tokens);
+      push_cmd(&cmd_stack, simple);
     }
 
     // 2. if it's a "(", push it onto the operator stack
-    // 3. if it's an operator and operator stack is empty
-    //   a. push the operator onto the operator_stack
-    // 4. if it's an operato and operator stack NOT empty
-    //   a. pop all operators with greater or equal precedence off the operator_stack
-    //     for each operator, pop 2 commands off the command stack
-    //     combine into new command and push it onto the command stack
-    //   b. stop when reach an operator with lower precedence or a "("
-    //   c. push new operator onto the operator stack
+    if (tokens->type == OPEN_PARENS_TOKEN) {
+      push_tok(&op_stack, tokens)
+    }
+      
+    // 3/4. if it's an operator
+    if (tokens->type == AND_TOKEN || tokens->type == SEQUENCE_TOKEN || tokens->type == OR_TOKEN || tokens->type == PIPE_TOKEN)
+    {
+      if (!op_stack) {
+        // 3. if the operator stack is empty, push the operator onto the operator_stack
+        push_tok(&op_stack ,tokens);
+      } else {
+        // 4. if the operator stack is NOT empty
+        // a. pop all operators with greater or equal precedence off the operator_stack
+        //    for each operator, pop 2 commands off the command stack
+        //    combine into new command and push it onto the command stack
+        while (operator_precedence(op_stack) >= operator_precedence(tokens)) {
+          token_t = pop_tok(&op_stack);
+          command_node_t second = pop_cmd(&cmd_stack);
+          command_node_t first = pop_cmd(&cmd_stack);
+
+          
+
+          push_tok(&cmd_stack, new_cmd);
+        }
+        // b. stop when reach an operator with lower precedence or a "("
+        // c. push new operator onto the operator stack
+      }
+    }
+   
     // 5. if it's a ")", pop operators off (similar to 4a.) until a matching "("
     //   create a subshell command by popping off top command on command stack
 

@@ -16,7 +16,7 @@ typedef enum token_type
     UNKNOWN_TOKEN         // anything else
   } token_type_t;
 
-enum command_type
+typedef enum command_type
   {
     AND_COMMAND,         // A && B
     SEQUENCE_COMMAND,    // A ; B
@@ -24,7 +24,7 @@ enum command_type
     PIPE_COMMAND,        // A | B
     SIMPLE_COMMAND,      // a simple command
     SUBSHELL_COMMAND,    // ( A )
-  };
+  } command_type_t;
 
 typedef struct token
 {
