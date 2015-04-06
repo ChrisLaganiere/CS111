@@ -325,7 +325,6 @@ check_token_syntax (token_t tokens)
       fprintf(stderr, "%i: too many closing parentheses", line);
       exit(1);
     }
-
     tokens = tokens->next;
   }
 
@@ -340,12 +339,12 @@ check_token_syntax (token_t tokens)
 }
 
 // MARK: identify commands
-
 command_t
 pop_cmd(command_node_t top)
 {
   command_t cmd = top->command;
   top = top->next;
+  top->prev = NULL;
   return cmd;
 }
 
@@ -446,7 +445,6 @@ identify_commands(token_t tokens)
       command_node_t simple = make_simple_command(&tokens);
     }
 
-
     // 2. if it's a "(", push it onto the operator stack
     // 3. if it's an operator and operator stack is empty
     //   a. push the operator onto the operator_stack
@@ -459,7 +457,7 @@ identify_commands(token_t tokens)
     // 5. if it's a ")", pop operators off (similar to 4a.) until a matching "("
     //   create a subshell command by popping off top command on command stack
 
-    // 8. go back to 1
+    // 6. go back to 1
     tokens = tokens->next;
   }
 }
