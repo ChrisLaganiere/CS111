@@ -10,13 +10,7 @@
 #include <ctype.h>
 #include <string.h>
 
-#define DEBUG 1
-
-/* FIXME: You may need to add #include directives, macro definitions,
-   static function definitions, etc.  */
-
-/* FIXME: Define the type 'struct command_stream' here.  This should
-   complete the incomplete type declaration in command.h.  */
+#define DEBUG 0
 
 typedef struct command_node
 {
@@ -31,12 +25,6 @@ typedef struct command_stream
   struct command_node *tail;
   struct command_node *cursor; // initialize to head
 } command_stream;
-
-// char * read_chars(int (*get_next_byte) (void *), void *get_next_byte_argument);
-// int simple_char (char a);
-// token_t make_tokens (char *char_buffer);
-// void list_tokens (token_t tokens);
-// void check_token_syntax (token_t tokens);
 
 // MARK: read input characters
 
@@ -157,10 +145,11 @@ make_tokens (char *char_buffer)
       case '#':
         // check if comment is valid
         if (buffer_index == 0 || !simple_char(char_buffer[buffer_index - 1])) {
-          while ((b = char_buffer[buffer_index + 1]) && b != '\n' && b != '\0') {
+          while ((b = char_buffer[buffer_index]) && b != '\n' && b != '\0') {
             buffer_index++;
           }
-          type = COMMENT_TOKEN;
+          // don't bother pushing a comment token, just go to next token
+          continue;
         } else {
           // invalid comment
           fprintf(stderr, "%i: comment must not be preceded by an ordinary token", line);
@@ -258,12 +247,20 @@ check_token_syntax (token_t tokens)
 
   while (tokens) {
     // handle new lines
-    if (!needs_right_cmd && tokens->type == NEWLINE_TOKEN) {
-      if (tokens->next && tokens->next->type == NEWLINE_TOKEN) {
-        tokens = tokens->next;
-        line++;
-      } else if (tokens->next) {
+    if (tokens->type == NEWLINE_TOKEN) {
+      if (needs_right_cmd) {
+        // ignore new line in the middle of an operator command
         tokens->type = UNKNOWN_TOKEN;
+        line++;
+      } else if (tokens->next && tokens->next->type == NEWLINE_TOKEN) {
+        // multiple new lines, just skip them
+        while (tokens->next && tokens->next->type == NEWLINE_TOKEN) {
+          tokens = tokens->next;
+          line++;
+        }
+      } else if (tokens->next) {
+        // one new line outide a command -> equivalent to a sequence token
+        tokens->type = SEQUENCE_TOKEN;
         line++;
       }
     }
@@ -307,11 +304,12 @@ check_token_syntax (token_t tokens)
       case OPEN_PARENS_TOKEN:
         open_parens++;
         left_cmd = 0;
-        needs_right_cmd = 0;
+        needs_right_cmd = 1;
         break;
       case CLOSE_PARENS_TOKEN:
         open_parens--;
         left_cmd = 1;
+        needs_right_cmd = 0;
         break;
       case INPUT_TOKEN:
         if (!left_cmd) {
@@ -371,9 +369,10 @@ make_simple_command(token_t *command_start)
   token_t tokens = *command_start;
   command_node_t simple = make_command();
   simple->command->type = SIMPLE_COMMAND;
-  char *word = NULL;
-  size_t words_length = 0;
-  int entered_chars = 0;
+  char **word = NULL;
+  char **wordPos = NULL;
+  size_t words_length = 1;
+  // int entered_chars = 0;
   while (tokens && (tokens->type == SIMPLE_TOKEN || tokens->type == INPUT_TOKEN || tokens->type == OUTPUT_TOKEN))
   {
     if (tokens->type == INPUT_TOKEN) {
@@ -383,8 +382,8 @@ make_simple_command(token_t *command_start)
         fprintf(stderr, "%i: command output must come after command input", tokens->line);
         exit(1);
       } else if (tokens->next && tokens->next->type == SIMPLE_TOKEN) {
-        simple->command->input = tokens->word;
         tokens = tokens->next;
+        simple->command->input = tokens->word;
       } else {
         fprintf(stderr, "%i: missing command input", tokens->line);
         exit(1);
@@ -392,8 +391,8 @@ make_simple_command(token_t *command_start)
     } else if (tokens->type == OUTPUT_TOKEN) {
       // update command output
       if (tokens->next && tokens->next->type == SIMPLE_TOKEN) {
-        simple->command->output = tokens->word;
         tokens = tokens->next;
+        simple->command->output = tokens->word;
       } else {
         fprintf(stderr, "%i: missing command output", tokens->line);
         exit(1);
@@ -403,29 +402,27 @@ make_simple_command(token_t *command_start)
         printf("Found simple word: %s \n", tokens->word);
       }
       // update command words
-      words_length += strlen(tokens->word) + sizeof(char);
+      words_length += 1;
       if (word == NULL) {
-        word = (char *)checked_malloc(words_length);
+        word = (char **)checked_malloc(words_length*sizeof(char*));
+        wordPos = word;
       } else {
-        word = (char *)checked_realloc(word, words_length);
+        word = (char **)checked_realloc(word, words_length*sizeof(char*));
       }
 
-      int read_chars = 0;
-      while (tokens->word[read_chars] != '\0') {
-        word[entered_chars + read_chars] = tokens->word[read_chars];
-        read_chars++;
-      }
-      entered_chars += read_chars;
-      word[entered_chars] = ' ';
-      entered_chars++;
+      *wordPos++ = tokens->word;
+      // entered_chars += read_chars;
+      // word[entered_chars] = ' ';
+      // entered_chars++;
     }
     tokens = tokens->next;
   }
-  word[entered_chars-1] = '\0';
+  // word[entered_chars-1] = '\0';
+  *wordPos = NULL;
   if (DEBUG) {
-    printf("Created simple command: %s \n", word);
+    printf("Created simple command: %s \n", *word);
   }
-  simple->command->u.word = &word;
+  simple->command->u.word = word;
 
   *command_start = tokens;
   return simple;
@@ -591,8 +588,10 @@ list_commands (command_node_t root)
   while (root) {
     printf("%d", root->command->type);
     if (root->command->type == SIMPLE_COMMAND) {
-      char **w - root->command->u.word;
-      printf(" %s", *w);
+      char **w = root->command->u.word;
+      while (*w) {
+        printf(" %s", *w++);
+      }
     }
     printf("\n");
     root = root->next;
@@ -714,11 +713,23 @@ make_command_stream (int (*get_next_byte) (void *),
   command_node_t root = identify_commands(tokens);
 
   if (!root) {
-
+    return NULL;
   }
 
   command_stream_t stream = (command_stream *)checked_malloc(sizeof(command_stream));
-  stream->head = stream->tail = stream->cursor = root;
+
+  // reverse order of the commands
+  stream->tail = stream->head = stream->cursor = root;
+  root = root->next;
+  while (root) {
+    command_node_t next_root = root->next;
+    root->next = stream->head;
+    stream->head->prev = root;
+    root->prev = NULL;
+    stream->head = stream->cursor = root;
+    root = next_root;
+  }
+  stream->tail->next = NULL;
   return stream;
 }
 
@@ -727,19 +738,10 @@ make_command_stream (int (*get_next_byte) (void *),
 command_t
 read_command_stream (command_stream_t s)
 {
-  error (1, 0, "command reading not yet implemented");
-  return 0;
   if (!s->cursor) {
-    if (DEBUG) {
-       printf("couldn't read command stream\n");
-     }
     return NULL;
-  } else {
-    if (DEBUG) {
-      printf("reading command stream\n");
-    }
   }
-  command_node_t cmd = s->cursor;
+  command_t cmd = s->cursor->command;
   s->cursor = s->cursor->next;
   return cmd;
 }
