@@ -10,6 +10,8 @@
 #include <ctype.h>
 #include <string.h>
 
+#define DEBUG 1
+
 /* FIXME: You may need to add #include directives, macro definitions,
    static function definitions, etc.  */
 
@@ -23,12 +25,12 @@ typedef struct command_node
   struct command_node *prev;
 } command_node;
 
-struct command_stream
+typedef struct command_stream
 {
   struct command_node *head;
   struct command_node *tail;
   struct command_node *cursor; // initialize to head
-};
+} command_stream;
 
 // char * read_chars(int (*get_next_byte) (void *), void *get_next_byte_argument);
 // int simple_char (char a);
@@ -238,6 +240,7 @@ list_tokens (token_t tokens)
     printf("\n");
     tokens = tokens->next;
   }
+  printf("\n");
 }
 
 // MARK: check token syntax
@@ -254,6 +257,17 @@ check_token_syntax (token_t tokens)
   int needs_right_cmd = 0;
 
   while (tokens) {
+    // handle new lines
+    if (!needs_right_cmd && tokens->type == NEWLINE_TOKEN) {
+      if (tokens->next && tokens->next->type == NEWLINE_TOKEN) {
+        tokens = tokens->next;
+        line++;
+      } else if (tokens->next) {
+        tokens->type = UNKNOWN_TOKEN;
+        line++;
+      }
+    }
+
     switch (tokens->type) {
       case AND_TOKEN:
         if (!left_cmd) {
@@ -356,6 +370,7 @@ make_simple_command(token_t *command_start)
 {
   token_t tokens = *command_start;
   command_node_t simple = make_command();
+  simple->command->type = SIMPLE_COMMAND;
   char *word = NULL;
   size_t words_length = 0;
   int entered_chars = 0;
@@ -384,7 +399,9 @@ make_simple_command(token_t *command_start)
         exit(1);
       }
     } else { 
-      printf("Found simple word: %s \n", tokens->word);
+      if (DEBUG) {
+        printf("Found simple word: %s \n", tokens->word);
+      }
       // update command words
       words_length += strlen(tokens->word) + sizeof(char);
       if (word == NULL) {
@@ -405,7 +422,9 @@ make_simple_command(token_t *command_start)
     tokens = tokens->next;
   }
   word[entered_chars-1] = '\0';
-  printf("Created simple command: %s \n", word);
+  if (DEBUG) {
+    printf("Created simple command: %s \n", word);
+  }
   simple->command->u.word = &word;
 
   *command_start = tokens;
@@ -413,11 +432,11 @@ make_simple_command(token_t *command_start)
 }
 
 command_node_t
-make_operator_command(token_t op, command_node_t first, command_node_t second)
+make_operator_command(token_t op, command_t first, command_t second)
 {
   command_node_t new_cmd = make_command();
   command_type_t new_type = SEQUENCE_COMMAND;
-  switch (tokens->type) {
+  switch (op->type) {
     case AND_TOKEN:
       new_type = AND_COMMAND;
       break;
@@ -439,11 +458,27 @@ make_operator_command(token_t op, command_node_t first, command_node_t second)
   return new_cmd;
 }
 
+command_node_t
+make_subshell_command(command_t cmd)
+{
+  if (!cmd) {
+    return NULL;
+  }
+
+  command_node_t new_cmd = make_command();
+  new_cmd->command->type = SUBSHELL_COMMAND;
+  new_cmd->command->u.subshell_command = cmd;
+  return new_cmd;
+}
+
 // command stack
 
 void
 push_cmd(command_node_t *head, command_node_t new_top)
 {
+  if (DEBUG) {
+    printf("push cmd\n");
+  }
   command_node_t top = *head;
   new_top->prev = NULL;
   if (top) {
@@ -452,18 +487,22 @@ push_cmd(command_node_t *head, command_node_t new_top)
   } else {
     new_top->next = NULL;
   }
-  *head = top;
+  *head = new_top;
 }
 
 command_t
 pop_cmd(command_node_t *head)
 {
+  if (DEBUG) {
+    printf("pop cmd\n");
+  }
   command_node_t top = *head;
   if (!top) {
     return NULL;
   }
 
-  command_t cmd = top->command;
+  command_node_t old_top = top;
+  command_t cmd = old_top->command;
   if(top->next)
   {
     top = top->next;
@@ -472,6 +511,7 @@ pop_cmd(command_node_t *head)
   else {
     top = NULL;
   }
+  free(old_top);
   *head = top;
   return cmd;
 }
@@ -481,20 +521,32 @@ pop_cmd(command_node_t *head)
 void
 push_tok(token_t *head, token_t new_top)
 {
-  token_t top = *head;
-  new_top->prev = NULL;
-  if (top) {
-    new_top->next = top;
-    top->prev = new_top;
-  } else {
-    new_top->next = NULL;
+  if (DEBUG) {
+    printf("push tok\n");
   }
-  *head = top;
+  token_t top = *head;
+
+  // copy token to new node
+  token_t new_token = (token *)checked_malloc(sizeof(token));
+  new_token->word = NULL;
+  new_token->type = new_top->type;
+  new_token->line = new_top->line;
+  new_token->prev = NULL;
+  if (top) {
+    new_token->next = top;
+    top->prev = new_token;
+  } else {
+    new_token->next = NULL;
+  }
+  *head = new_token;
 }
 
 token_t
 pop_tok(token_t *head)
 {
+  if (DEBUG) {
+    printf("pop tok\n");
+  }
   token_t top = *head;
   if(!top)
     return NULL;
@@ -532,26 +584,48 @@ operator_precedence(token_t op)
 }
 
 void
+list_commands (command_node_t root)
+{
+  printf("Available commands:\n0: AND_COMMAND\n1: SEQUENCE_COMMAND\n2: OR_COMMAND\n3: PIPE_COMMAND\n4: SIMPLE_COMMAND\n5: SUBSHELL_COMMAND\n\n");
+  printf("Parsed commands:\n");
+  while (root) {
+    printf("%d", root->command->type);
+    if (root->command->type == SIMPLE_COMMAND) {
+      char **w - root->command->u.word;
+      printf(" %s", *w);
+    }
+    printf("\n");
+    root = root->next;
+  }
+  printf("\n");
+}
+
+command_node_t
 identify_commands(token_t tokens)
 {
   command_node_t cmd_stack = NULL;
   token_t op_stack = NULL;
 
   while (tokens) {
+    if (DEBUG) {
+      printf("identifying token: %d \n", tokens->type);
+    }
+
     // 1. if a simple command, push it onto cmd_stack
     if (tokens->type == SIMPLE_TOKEN) {
       command_node_t simple = make_simple_command(&tokens);
       push_cmd(&cmd_stack, simple);
+      // already skipped to next token
+      continue;
     }
 
     // 2. if it's a "(", push it onto the operator stack
-    if (tokens->type == OPEN_PARENS_TOKEN) {
-      push_tok(&op_stack, tokens)
+    else if (tokens->type == OPEN_PARENS_TOKEN) {
+      push_tok(&op_stack, tokens);
     }
       
     // 3/4. if it's an operator
-    if (tokens->type == AND_TOKEN || tokens->type == SEQUENCE_TOKEN || tokens->type == OR_TOKEN || tokens->type == PIPE_TOKEN)
-    {
+    else if (tokens->type == AND_TOKEN || tokens->type == SEQUENCE_TOKEN || tokens->type == OR_TOKEN || tokens->type == PIPE_TOKEN) {
       if (!op_stack) {
         // 3. if the operator stack is empty, push the operator onto the operator_stack
         push_tok(&op_stack ,tokens);
@@ -561,25 +635,63 @@ identify_commands(token_t tokens)
         //    for each operator, pop 2 commands off the command stack
         //    combine into new command and push it onto the command stack
         while (operator_precedence(op_stack) >= operator_precedence(tokens)) {
-          token_t = pop_tok(&op_stack);
-          command_node_t second = pop_cmd(&cmd_stack);
-          command_node_t first = pop_cmd(&cmd_stack);
-
-          
-
-          push_tok(&cmd_stack, new_cmd);
+          token_t op = pop_tok(&op_stack);
+          command_t second = pop_cmd(&cmd_stack);
+          command_t first = pop_cmd(&cmd_stack);
+          command_node_t new_cmd = make_operator_command(op, first, second);
+          push_cmd(&cmd_stack, new_cmd);
         }
         // b. stop when reach an operator with lower precedence or a "("
         // c. push new operator onto the operator stack
+        push_tok(&op_stack, tokens);
       }
     }
    
     // 5. if it's a ")", pop operators off (similar to 4a.) until a matching "("
-    //   create a subshell command by popping off top command on command stack
+    else if (tokens->type == CLOSE_PARENS_TOKEN) {
+      while (op_stack->type != OPEN_PARENS_TOKEN) {
+        token_t op = pop_tok(&op_stack);
+        command_t second = pop_cmd(&cmd_stack);
+        command_t first = pop_cmd(&cmd_stack);
+        command_node_t new_cmd = make_operator_command(op, first, second);
+        push_cmd(&cmd_stack, new_cmd);
+      }
+      // create a subshell command by popping off top command on command stack
+      command_t top_cmd = pop_cmd(&cmd_stack);
+      command_node_t subshell_cmd = make_subshell_command(top_cmd);
+      push_cmd(&cmd_stack, subshell_cmd);
+    }
+
+    else if (tokens->type == NEWLINE_TOKEN) {
+      while (op_stack) {
+        token_t op = pop_tok(&op_stack);
+        command_t second = pop_cmd(&cmd_stack);
+        command_t first = pop_cmd(&cmd_stack);
+        command_node_t new_cmd = make_operator_command(op, first, second);
+        push_cmd(&cmd_stack, new_cmd);
+      }
+    }
 
     // 6. go back to 1
     tokens = tokens->next;
   }
+
+  // cleanup: push all remaining operators
+  while (op_stack) {
+    token_t op = pop_tok(&op_stack);
+    command_t second = pop_cmd(&cmd_stack);
+    command_t first = pop_cmd(&cmd_stack);
+    command_node_t new_cmd = make_operator_command(op, first, second);
+    push_cmd(&cmd_stack, new_cmd);
+  }
+
+  if (DEBUG) {
+    printf("\nop_stack and cmd_stack:\n\n");
+    list_tokens(op_stack);
+    list_commands(cmd_stack);
+  }
+
+  return cmd_stack;
 }
 
 // MARK: make_command_stream implementation
@@ -595,12 +707,19 @@ make_command_stream (int (*get_next_byte) (void *),
     return NULL;
   }
   
-  list_tokens(tokens);
+  if (DEBUG) {
+    list_tokens(tokens);
+  }
   check_token_syntax(tokens);
-  identify_commands(tokens);
+  command_node_t root = identify_commands(tokens);
 
-  error (1, 0, "command making not yet implemented");
-  return 0;
+  if (!root) {
+
+  }
+
+  command_stream_t stream = (command_stream *)checked_malloc(sizeof(command_stream));
+  stream->head = stream->tail = stream->cursor = root;
+  return stream;
 }
 
 // MARK: read_command_stream implementation
@@ -608,11 +727,19 @@ make_command_stream (int (*get_next_byte) (void *),
 command_t
 read_command_stream (command_stream_t s)
 {
-  
-  /* FIXME: Replace this with your implementation.  You may need to
-     add auxiliary functions and otherwise modify the source code.
-     You can also use external functions defined in the GNU C Library.  */
   error (1, 0, "command reading not yet implemented");
-
   return 0;
+  if (!s->cursor) {
+    if (DEBUG) {
+       printf("couldn't read command stream\n");
+     }
+    return NULL;
+  } else {
+    if (DEBUG) {
+      printf("reading command stream\n");
+    }
+  }
+  command_node_t cmd = s->cursor;
+  s->cursor = s->cursor->next;
+  return cmd;
 }
