@@ -248,8 +248,8 @@ check_token_syntax (token_t tokens)
   while (tokens) {
     // handle new lines
     if (tokens->type == NEWLINE_TOKEN) {
-      if (needs_right_cmd) {
-        // ignore new line in the middle of an operator command
+      if (needs_right_cmd || (tokens->next && tokens->next->type == CLOSE_PARENS_TOKEN)) {
+        // ignore new line in the middle of an operator command or parens
         tokens->type = UNKNOWN_TOKEN;
         line++;
       } else if (tokens->next && tokens->next->type == NEWLINE_TOKEN) {
@@ -258,7 +258,7 @@ check_token_syntax (token_t tokens)
           tokens = tokens->next;
           line++;
         }
-      } else if (tokens->next) {
+      } else if (tokens->next && left_cmd) {
         // one new line outide a command -> equivalent to a sequence token
         tokens->type = SEQUENCE_TOKEN;
         line++;
@@ -307,6 +307,24 @@ check_token_syntax (token_t tokens)
         needs_right_cmd = 1;
         break;
       case CLOSE_PARENS_TOKEN:
+        if (!left_cmd) {
+          // check if separated from a valid left cmd only by newlines
+          token_t clone = tokens->prev;
+          while (clone) {
+            if (clone->type == SIMPLE_TOKEN || clone->type == CLOSE_PARENS_TOKEN) {
+              left_cmd = 1;
+              break;
+            } else if (operator_precedence(clone) > 0) {
+              fprintf(stderr, "%i: ')' must come after a valid command", line);
+              exit(1);
+            }
+            clone = clone->prev;
+          }
+        }
+        if (!left_cmd) {
+          fprintf(stderr, "%i: ')' must come after a valid command", line);
+          exit(1);
+        }
         open_parens--;
         left_cmd = 1;
         needs_right_cmd = 0;
@@ -656,6 +674,7 @@ identify_commands(token_t tokens)
         push_cmd(&cmd_stack, new_cmd);
       }
       // create a subshell command by popping off top command on command stack
+      pop_tok(&op_stack);
       command_t top_cmd = pop_cmd(&cmd_stack);
       command_node_t subshell_cmd = make_subshell_command(top_cmd);
       push_cmd(&cmd_stack, subshell_cmd);
@@ -707,9 +726,14 @@ make_command_stream (int (*get_next_byte) (void *),
   }
   
   if (DEBUG) {
+    printf("before syntax check:\n\n");
     list_tokens(tokens);
   }
   check_token_syntax(tokens);
+  if (DEBUG) {
+    printf("after syntax check:\n\n");
+    list_tokens(tokens);
+  }
   command_node_t root = identify_commands(tokens);
 
   if (!root) {
@@ -738,7 +762,7 @@ make_command_stream (int (*get_next_byte) (void *),
 command_t
 read_command_stream (command_stream_t s)
 {
-  if (!s->cursor) {
+  if (!s || !s->cursor) {
     return NULL;
   }
   command_t cmd = s->cursor->command;
