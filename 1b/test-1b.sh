@@ -1,0 +1,50 @@
+#! /bin/sh
+
+# UCLA CS 111 Lab 1b - Test that valid commands are executed correctly.
+
+tmp=$0-$$.tmp
+mkdir "$tmp" || exit
+
+(
+cd "$tmp" || exit
+
+cat >test.sh <<'EOF'
+#output 'abc'
+echo abc
+
+echo Life is about the journey not the destination > a.txt
+
+#output Life is about the journey not the destination
+(cat < a.txt)
+
+(echo where is my mind > b.txt)
+
+#output Life is about the journey not the destination
+#output where is my mind
+cat a.txt && cat b.txt
+
+(cat asdf.txt && cat b.txt)
+
+#output Life is about the journey not the destination
+cat a.txt || cat b.txt
+
+#output where is my mind
+(cat asdf.txt || cat b.txt)
+EOF
+
+cat >test.exp <<'EOF'
+abc
+Life is about the journey not the destination
+Life is about the journey not the destination
+where is my mind
+Life is about the journey not the destination
+where is my mind
+EOF
+
+../timetrash test.sh >test.out 2>test.err || exit
+
+diff -u test.exp test.out || exit
+
+) || exit
+
+rm -fr "$tmp"
