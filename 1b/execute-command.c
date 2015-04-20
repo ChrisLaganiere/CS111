@@ -7,9 +7,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <stdlib.h>
+#include <stdio.h>
 
-/* FIXME: You may need to add #include directives, macro definitions,
-   static function definitions, etc.  */
+#define DEBUG 1
 
 int
 command_status (command_t c)
@@ -99,33 +100,95 @@ execute_or(command_t c, bool time_travel)
 }
 
 void
+execute_sequence(command_t c, bool time_travel)
+{
+  execute_command(c->u.command[0], time_travel);
+  if(c->u.command[0]->status == 0) {
+    execute_command(c->u.command[1],time_travel);
+    c->status = c->u.command[1]->status;
+  } else {
+  	c->status = c->u.command[0]->status;
+  }
+}
+
+void
+execute_pipe(command_t c, bool time_travel)
+{
+  int fd[2];
+  pipe(fd);
+  int first_pid = fork();
+  // right command (waiting for data from pipe)
+  if(first_pid == 0) {
+    close(fd[1]);   // close unused write end
+    dup2(fd[0],0);
+    execute_command(c->u.command[1], time_travel);
+  } else {
+    int second_pid = fork();
+    // left command (will write data to pipe)
+    if (second_pid == 0) {
+        close(fd[0]);   // close unused read end
+        dup2(fd[1], 1);
+        execute_command(c->u.command[0], time_travel);
+    } else{
+    	// close unnused pipe
+      close(fd[0]);
+      close(fd[1]);
+      int status;
+      // parent wait for the two children
+			int returned_pid = waitpid(-1, &status, 0);
+			if (returned_pid == second_pid) {
+				c->u.command[0]->status = WEXITSTATUS(status);
+				waitpid(first_pid, &status, 0);
+				c->u.command[1]->status = WEXITSTATUS(status);
+			}
+			else if (returned_pid == first_pid) {
+				c->u.command[1]->status = WEXITSTATUS(status);
+				waitpid(second_pid, &status, 0);
+				c->u.command[0]->status = WEXITSTATUS(status);
+			}
+			// set status of pipe
+			if (c->u.command[0]->status == 0) {
+				c->status = c->u.command[1]->status;
+			} else {
+				c->status = c->u.command[0]->status;
+			}
+    }
+  } 
+}
+
+void
 execute_command (command_t c, bool time_travel)
 {
+	char cmd_type = ' ';
 	switch(c->type) {
     case SIMPLE_COMMAND:
     	execute_simple(c);
+    	cmd_type = 's';
     	break;
     case SUBSHELL_COMMAND:
     	execute_subshell(c, time_travel);
+    	cmd_type = '(';
     	break;
     case AND_COMMAND:
     	execute_and(c, time_travel);
+    	cmd_type = 'a';
     	break;
     case OR_COMMAND:
     	execute_or(c, time_travel);
+    	cmd_type = 'o';
     	break;
     case SEQUENCE_COMMAND:
-    	// TODO: handle sequence commands
+    	execute_sequence(c, time_travel);
+    	cmd_type = ';';
     	break;
     case PIPE_COMMAND:
-    	// TODO: handle pipe commands
+    	execute_pipe(c, time_travel);
+    	cmd_type = '|';
     	break;
 		default:
 			return;
 	}
-
-  /* FIXME: Replace this with your implementation.  You may need to
-     add auxiliary functions and otherwise modify the source code.
-     You can also use external functions defined in the GNU C Library.  */
-  // error(1, 0, "Could not execute command");
+	if (DEBUG) {
+		printf("%c cmd - exit status: %d\n", cmd_type, c->status);
+	}
 }

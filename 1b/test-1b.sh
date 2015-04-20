@@ -30,6 +30,16 @@ cat a.txt || cat b.txt
 
 #output where is my mind
 (cat asdf.txt || cat b.txt)
+
+#output apple
+echo apple; echo pear > p.txt
+
+#output pear
+#output where is my mind
+(cat asdf.txt || cat p.txt); cat b.txt
+
+#output a.txt
+ls | grep a
 EOF
 
 cat >test.exp <<'EOF'
@@ -39,6 +49,10 @@ Life is about the journey not the destination
 where is my mind
 Life is about the journey not the destination
 where is my mind
+apple
+pear
+where is my mind
+a.txt
 EOF
 
 ../timetrash test.sh >test.out 2>test.err || exit
