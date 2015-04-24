@@ -403,26 +403,20 @@ make_command()
 }
 
 command_node_t
-make_simple_command(token_t *command_start)
-{
-  token_t tokens = *command_start;
-  command_node_t simple = make_command();
-  simple->command->type = SIMPLE_COMMAND;
-  char **word = NULL;
-  char **wordPos = NULL;
-  size_t words_length = 1;
-  // int entered_chars = 0;
-  while (tokens && (tokens->type == SIMPLE_TOKEN || tokens->type == INPUT_TOKEN || tokens->type == OUTPUT_TOKEN))
+apply_redirects(command_node_t cmd, token_t *next_token)
+{ 
+  token_t tokens = *next_token;
+  while (tokens && (tokens->type == INPUT_TOKEN || tokens->type == OUTPUT_TOKEN))
   {
     if (tokens->type == INPUT_TOKEN) {
       // update command input
-      if (simple->command->output) {
+      if (cmd->command->output) {
         // invalid syntax, output already set (command > output < input)
         fprintf(stderr, "%i: command output must come after command input\n", tokens->line);
         exit(1);
       } else if (tokens->next && tokens->next->type == SIMPLE_TOKEN) {
         tokens = tokens->next;
-        simple->command->input = tokens->word;
+        cmd->command->input = tokens->word;
       } else {
         fprintf(stderr, "%i: missing command input\n", tokens->line);
         exit(1);
@@ -431,32 +425,45 @@ make_simple_command(token_t *command_start)
       // update command output
       if (tokens->next && tokens->next->type == SIMPLE_TOKEN) {
         tokens = tokens->next;
-        simple->command->output = tokens->word;
+        cmd->command->output = tokens->word;
       } else {
         fprintf(stderr, "%i: missing command output\n", tokens->line);
         exit(1);
       }
-    } else { 
-      if (DEBUG) {
-        printf("Found simple word: %s \n", tokens->word);
-      }
-      // update command words
-      words_length += 1;
-      if (word == NULL) {
-        word = (char **)checked_malloc(words_length*sizeof(char*));
-        wordPos = word;
-      } else {
-        word = (char **)checked_realloc(word, words_length*sizeof(char*));
-      }
-
-      *wordPos++ = tokens->word;
-      // entered_chars += read_chars;
-      // word[entered_chars] = ' ';
-      // entered_chars++;
-    }
+    } 
     tokens = tokens->next;
   }
-  // word[entered_chars-1] = '\0';
+  *next_token = tokens;
+  return cmd;
+}
+
+command_node_t
+make_simple_command(token_t *command_start)
+{
+  token_t tokens = *command_start;
+  command_node_t simple = make_command();
+  simple->command->type = SIMPLE_COMMAND;
+  char **word = NULL;
+  char **wordPos = NULL;
+  size_t words_length = 1;
+
+  while (tokens && tokens->type == SIMPLE_TOKEN)
+  {
+    if (DEBUG) {
+      printf("Found simple word: %s \n", tokens->word);
+    }
+    // update command words
+    words_length += 1;
+    if (word == NULL) {
+      word = (char **)checked_malloc(words_length*sizeof(char*));
+      wordPos = word;
+    } else {
+      word = (char **)checked_realloc(word, words_length*sizeof(char*));
+    }
+
+    *wordPos++ = tokens->word;
+    tokens = tokens->next;
+  }
   *wordPos = NULL;
   if (DEBUG) {
     printf("Created simple command: %s \n", *word);
@@ -631,6 +638,7 @@ identify_commands(token_t tokens)
     // 1. if a simple command, push it onto cmd_stack
     if (tokens->type == SIMPLE_TOKEN) {
       command_node_t simple = make_simple_command(&tokens);
+      apply_redirects(simple, &tokens);
       push_cmd(&cmd_stack, simple);
       // already skipped to next token
       continue;
@@ -677,7 +685,11 @@ identify_commands(token_t tokens)
       pop_tok(&op_stack);
       command_t top_cmd = pop_cmd(&cmd_stack);
       command_node_t subshell_cmd = make_subshell_command(top_cmd);
+      tokens = tokens->next;
+      apply_redirects(subshell_cmd, &tokens);
       push_cmd(&cmd_stack, subshell_cmd);
+      // already skipped to next token
+      continue;
     }
 
     else if (tokens->type == NEWLINE_TOKEN) {

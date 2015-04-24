@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define DEBUG 1
+#define DEBUG 0
 
 int
 command_status (command_t c)
@@ -69,8 +69,12 @@ execute_simple(command_t c)
 void
 execute_subshell(command_t c, bool time_travel)
 {
-	// TODO: figure out redirection for cases like '(cat a.txt) > b.txt'. This doesn't seem to work:
-	// handle_redirection(c);
+  if (c->input && c->u.subshell_command->input == NULL) {
+    c->u.subshell_command->input = c->input;
+  }
+  if (c->output && c->u.subshell_command->output == NULL) {
+    c->u.subshell_command->output = c->output;
+  }
 	execute_command(c->u.subshell_command, time_travel);
 	c->status = c->u.subshell_command->status;
 }
@@ -116,42 +120,37 @@ execute_pipe(command_t c, bool time_travel)
 {
   int fd[2];
   pipe(fd);
-  int first_pid = fork();
+  pid_t first_pid = fork();
   // right command (waiting for data from pipe)
   if(first_pid == 0) {
-    close(fd[1]);   // close unused write end
-    dup2(fd[0],0);
-    execute_command(c->u.command[1], time_travel);
-  } else {
-    int second_pid = fork();
+    close(fd[0]);   // close unused read end
+    dup2(fd[1], 1);
+    execute_command(c->u.command[0], time_travel);
+    close(fd[1]);
+    _exit(c->u.command[0]->status);
+  } else if (first_pid > 0) {
+    int status;
+    waitpid(-1, &status, 0);
+    status = WEXITSTATUS(status);
+    if (status != 0) {
+      // something went wrong
+      error(1, 0, "Invalid pipe command\n");
+    }
+    pid_t second_pid = fork();
     // left command (will write data to pipe)
     if (second_pid == 0) {
-        close(fd[0]);   // close unused read end
-        dup2(fd[1], 1);
-        execute_command(c->u.command[0], time_travel);
-    } else{
+      close(fd[1]);   // close unused write end
+      dup2(fd[0],0);
+      execute_command(c->u.command[1], time_travel);
+      close(fd[0]);
+      _exit(c->u.command[1]->status);
+    } else if (second_pid > 0) {
     	// close unnused pipe
       close(fd[0]);
       close(fd[1]);
-      int status;
       // parent wait for the two children
-			int returned_pid = waitpid(-1, &status, 0);
-			if (returned_pid == second_pid) {
-				c->u.command[0]->status = WEXITSTATUS(status);
-				waitpid(first_pid, &status, 0);
-				c->u.command[1]->status = WEXITSTATUS(status);
-			}
-			else if (returned_pid == first_pid) {
-				c->u.command[1]->status = WEXITSTATUS(status);
-				waitpid(second_pid, &status, 0);
-				c->u.command[0]->status = WEXITSTATUS(status);
-			}
-			// set status of pipe
-			if (c->u.command[0]->status == 0) {
-				c->status = c->u.command[1]->status;
-			} else {
-				c->status = c->u.command[0]->status;
-			}
+      waitpid(-1, &status, 0);
+      c->status = WEXITSTATUS(status);
     }
   } 
 }

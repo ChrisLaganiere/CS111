@@ -40,6 +40,14 @@ echo apple; echo pear > p.txt
 
 #output a.txt
 ls | grep a
+
+(echo its a doggy dog world out there) > c.txt
+
+#output intercepted
+echo intercepted
+
+#output its a doggy dog world out there
+cat c.txt
 EOF
 
 cat >test.exp <<'EOF'
@@ -53,6 +61,8 @@ apple
 pear
 where is my mind
 a.txt
+intercepted
+its a doggy dog world out there
 EOF
 
 ../timetrash test.sh >test.out 2>test.err || exit
