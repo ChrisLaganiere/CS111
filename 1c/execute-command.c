@@ -412,10 +412,68 @@ create_graph(command_stream_t stream)
   return graph;
 }
 
-void
+int
+execute_no_dependencies(graph_node *current)
+{
+  int status = -1;
+  while (current) {
+    pid_t pid = fork();
+    if (pid == 0) {
+      // child process
+      execute_command(current->root, true);
+      _exit(current->root->status);
+    } else {
+      // parent process
+      current->pid = pid;
+      waitpid(-1, &status, 0);
+      if (DEBUG) {
+        printf("exit status: %d\n", status);
+      }
+    }
+
+    current = current->next;
+  }
+  return status;
+}
+
+int
+execute_dependencies(graph_node *current)
+{
+  int status = -1;
+  while (current) {
+    // wait for dependencies to finish first
+    int before_idx = 0;
+    for (before_idx = 0; before_idx < current->before_size; before_idx++) {
+      graph_node *dependency = current->before[before_idx];
+      waitpid(dependency->pid, &status, 0);
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+      // child process
+      execute_command(current->root, true);
+      _exit(current->root->status);
+    } else {
+      // parent process
+      current->pid = pid;
+      waitpid(-1, &status, 0);
+      if (DEBUG) {
+        printf("exit status: %d\n", status);
+      }
+    }
+
+    current = current->next;
+  }
+  return status;
+}
+
+int
 execute_graph(dependency_graph_t graph)
 {
-  printf("\n\n\n\n");
-  print_dependencies(graph->no_dependencies);
+  int final_status = execute_no_dependencies(graph->no_dependencies);
+  if (graph->dependencies) {
+    final_status = execute_dependencies(graph->dependencies);
+  }
+  return final_status;
 }
 
