@@ -199,6 +199,10 @@ execute_command (command_t c, bool time_travel)
 
 list_node *depend_head;
 
+/**
+*  Helper method to make debugging easier. Print information about a linked list
+*  of graph_nodes CURRENT, including it's command and dependencies
+**/
 void
 print_dependencies(graph_node *current)
 {
@@ -218,8 +222,12 @@ print_dependencies(graph_node *current)
   }
 }
 
+/**
+*  Mark dependencies on the list_node LIST by adding pointers to char * WORD
+*  to read_list (if not WRITE) or write_list (if WRITE).
+**/
 void
-store_dependency(list_node *list, char *word, bool write)
+mark_read_write(list_node *list, char *word, bool write)
 {
   // ignore options
   char first = word[0];
@@ -248,33 +256,42 @@ store_dependency(list_node *list, char *word, bool write)
   }
 }
 
+/**
+*  Mark list_node LIST's read and write dependency lists by going through input / output and all words
+*  in command COMMAND. 
+**/
 void
-process_dependencies(list_node *list, command_t command)
+process_read_write(list_node *list, command_t command)
 {
   if (command->input) {
-    store_dependency(list, command->input, false);
+    mark_read_write(list, command->input, false);
   }
   if (command->output) {
-    store_dependency(list, command->output, true);
+    mark_read_write(list, command->output, true);
   }
 
   if (command->type == SIMPLE_COMMAND) {
     if (command->u.word[0]) {
       int word_idx = 1;
       while (command->u.word[word_idx]) {
-        store_dependency(list, command->u.word[word_idx], false);
+        mark_read_write(list, command->u.word[word_idx], false);
         word_idx++;
       }
     }
   } else if (command->type == SUBSHELL_COMMAND) {
-    process_dependencies(list, command->u.subshell_command);
+    process_read_write(list, command->u.subshell_command);
   } else {
     // 2 subcommands
-    process_dependencies(list, command->u.command[0]);
-    process_dependencies(list, command->u.command[1]);
+    process_read_write(list, command->u.command[0]);
+    process_read_write(list, command->u.command[1]);
   }
 }
 
+/**
+*  Check for dependencies on a list_node LIST by checking list_nodes which have already
+*  been check and processed. Will compare LIST.read_list and LIST.write_list to the read
+*  and write lists of all list_nodes attached to global variable depend_head.
+**/
 void
 check_dependencies(list_node *list)
 {
@@ -333,6 +350,11 @@ check_dependencies(list_node *list)
   }
 }
 
+/**
+*  Make a new graph_node and a container list_node to hold it, to
+*  represent the command COMMAND. Also check for any dependencies on commands
+*  which have already been processed.
+**/
 graph_node *
 process_command(command_t command)
 {
@@ -350,7 +372,7 @@ process_command(command_t command)
   list->write_list = list->read_list = NULL;
   list->write_size = list->read_size = 0;
   list->next = list->prev = NULL;
-  process_dependencies(list, command);
+  process_read_write(list, command);
   check_dependencies(list);
 
   // push to global dependencies linked list
@@ -363,6 +385,10 @@ process_command(command_t command)
   return node;
 }
 
+/**
+*  Create a dependency_graph representing a command_stream STREAM which finds any dependencies
+*  between different commands so that they can be run in parallel without any side effects.
+**/
 dependency_graph_t
 create_graph(command_stream_t stream)
 {
@@ -412,6 +438,9 @@ create_graph(command_stream_t stream)
   return graph;
 }
 
+/**
+*  Execute a linked list of graph_nodes CURRENT representing commands to be executed.
+**/
 int
 execute_no_dependencies(graph_node *current)
 {
@@ -436,6 +465,10 @@ execute_no_dependencies(graph_node *current)
   return status;
 }
 
+/**
+*  Execute a linked list of graph_nodes CURRENT representing commands to be executed, but only
+*  run each command after all of its dependencies have run, so there's no race conditions. 
+**/
 int
 execute_dependencies(graph_node *current)
 {
@@ -467,6 +500,10 @@ execute_dependencies(graph_node *current)
   return status;
 }
 
+/**
+*  Execute the graph by running commands which have dependencies after their dependencies run.
+*  Execute the dependency graph without race conditions.
+**/
 int
 execute_graph(dependency_graph_t graph)
 {

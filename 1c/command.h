@@ -32,6 +32,10 @@ void execute_command (command_t, bool);
    been executed.  Wait for the command, if it is not already finished.  */
 int command_status (command_t);
 
+/* Build up a dependency graph representing the command stream STREAM to avoid any race conditions
+*/
 dependency_graph_t create_graph(command_stream_t stream);
 
+/* Execute commands represented in the dependency graph GRAPH in an appropriate order to avoid any race conditions
+*/
 int execute_graph(dependency_graph_t graph);
