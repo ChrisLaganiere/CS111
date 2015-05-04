@@ -1,5 +1,6 @@
 // UCLA CS 111 Lab 1 command execution
 
+#include "alloc.h"
 #include "command.h"
 #include "command-internals.h"
 
@@ -10,7 +11,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define DEBUG 0
+#define DEBUG 1
 
 int
 command_status (command_t c)
@@ -187,3 +188,92 @@ execute_command (command_t c, bool time_travel)
 		printf("%c cmd - exit status: %d\n", cmd_type, c->status);
 	}
 }
+
+
+
+
+/**
+*  Time Travel
+**/
+
+list_node *depend_head;
+
+void
+store_dependency(list_node *list, char *word, bool write)
+{
+  if (write) {
+    // write
+    list->write_size++;
+    if (list->write_list) {
+      list->write_list = (char **)checked_realloc(list->write_list, list->write_size*sizeof(char*));
+    } else {
+      list->write_list = (char **)checked_malloc(list->write_size*sizeof(char*));
+    }
+    list->write_list[list->write_size-1] = word;
+  } else {
+    // read
+    list->read_size++;
+    if (list->read_list) {
+      list->read_list = (char **)checked_realloc(list->read_list, list->read_size*sizeof(char*));
+    } else {
+      list->read_list = (char **)checked_malloc(list->read_size*sizeof(char*));
+    }
+    list->read_list[list->read_size-1] = word;
+  }
+}
+
+void
+process_dependencies(list_node *list, command_t command)
+{
+  if (command->input) {
+    store_dependency(list, command->input, false);
+  }
+  if (command->output) {
+    store_dependency(list, command->output, true);
+  }
+
+  if (command->type == SIMPLE_COMMAND) {
+    if (command->u.word[0]) {
+      int word_idx = 1;
+      while (command->u.word[word_idx]) {
+        store_dependency(list, command->u.word[word_idx], false);
+      }
+    }
+  } else if (command->type == SUBSHELL_COMMAND) {
+    process_dependencies(list, command->u.subshell_command);
+  } else {
+    // 2 subcommands
+    process_dependencies(list, command->u.command[0]);
+    process_dependencies(list, command->u.command[1]);
+  }
+}
+
+graph_node *
+process_command(command_t command)
+{
+  // new graph node
+  graph_node *node = (graph_node *)checked_malloc(sizeof(graph_node));
+  node->root = command;
+  node->next = node->prev = NULL;
+  node->pid = -1;
+  node->before = NULL;
+
+  // new list node
+  list_node *list = (list_node *)checked_malloc(sizeof(list_node));
+  list->node = node;
+  list->write_list = list->read_list = NULL;
+  list->write_size = list->read_size = 0;
+  list->next = list->prev = NULL;
+
+  process_dependencies(list, command);
+  return node;
+}
+
+
+void
+execute_graph(dependency_graph_t graph)
+{
+  printf("\n\n\n\n");
+  print_dependencies(graph->no_dependencies);
+}
+
