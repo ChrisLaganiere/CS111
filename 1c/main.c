@@ -55,6 +55,7 @@ main (int argc, char **argv)
   command_t command;
   if (time_travel) {
     dependency_graph_t graph = create_graph(command_stream);
+    execute_graph(graph);
   } else {
     while ((command = read_command_stream (command_stream)))
     {

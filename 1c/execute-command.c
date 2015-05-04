@@ -10,8 +10,9 @@
 #include <sys/wait.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
-#define DEBUG 1
+#define DEBUG 0
 
 int
 command_status (command_t c)
@@ -199,8 +200,33 @@ execute_command (command_t c, bool time_travel)
 list_node *depend_head;
 
 void
+print_dependencies(graph_node *current)
+{
+  int node_count = 0;
+  while (current) {
+    node_count++;
+    printf("graph_node %d\n", node_count);
+    print_command(current->root);
+    int before_idx = 0;
+    for (before_idx = 0; before_idx < current->before_size; before_idx++) {
+      graph_node *dependency = current->before[before_idx];
+      printf("dependency #%d\n", before_idx+1);
+      print_command(dependency->root);
+    }
+    printf("\n");
+    current = current->next;
+  }
+}
+
+void
 store_dependency(list_node *list, char *word, bool write)
 {
+  // ignore options
+  char first = word[0];
+  if (first == '-') {
+    return;
+  }
+
   if (write) {
     // write
     list->write_size++;
@@ -237,6 +263,7 @@ process_dependencies(list_node *list, command_t command)
       int word_idx = 1;
       while (command->u.word[word_idx]) {
         store_dependency(list, command->u.word[word_idx], false);
+        word_idx++;
       }
     }
   } else if (command->type == SUBSHELL_COMMAND) {
@@ -245,6 +272,64 @@ process_dependencies(list_node *list, command_t command)
     // 2 subcommands
     process_dependencies(list, command->u.command[0]);
     process_dependencies(list, command->u.command[1]);
+  }
+}
+
+void
+check_dependencies(list_node *list)
+{
+  list_node *others = depend_head;
+  while (others)
+  {
+    // if others is a dependency of list
+    bool dependency = false;
+
+    int other_read_idx = 0;
+    int other_write_idx = 0;
+    int list_read_idx = 0;
+    int list_write_idx = 0;
+
+    // check list's WL against other RLs
+    for (other_read_idx = 0; other_read_idx < others->read_size && !dependency; other_read_idx++) {
+      for (list_write_idx = 0; list_write_idx < list->write_size; list_write_idx++) {
+        if (strcmp(others->read_list[other_read_idx], list->write_list[list_write_idx]) == 0) {
+          dependency = true;
+          break;
+        }
+      }
+    }
+
+    // check list's RL & WL against other WLs
+    for (other_write_idx = 0; other_write_idx < others->write_size && !dependency; other_write_idx++) {
+      // check list's RL
+      for (list_read_idx = 0; list_read_idx < list->read_size; list_read_idx++) {
+        if (strcmp(others->write_list[other_write_idx], list->read_list[list_read_idx]) == 0) {
+          dependency = true;
+          break;
+        }
+      }
+      // check list's WL
+      for (list_write_idx = 0; list_write_idx < list->write_size; list_write_idx++) {
+        if (strcmp(others->write_list[other_write_idx], list->write_list[list_write_idx]) == 0) {
+          dependency = true;
+          break;
+        }
+      }
+    }
+
+    // add others as a dependency on list
+    if (dependency) {
+      graph_node *node = list->node;
+      node->before_size++;
+      if (node->before) {
+        node->before = (graph_node **)checked_realloc(node->before, node->before_size*sizeof(graph_node*));
+      } else {
+        node->before = (graph_node **)checked_malloc(node->before_size*sizeof(graph_node*));
+      }
+      node->before[node->before_size-1] = others->node;
+    }
+    
+    others = others->next;
   }
 }
 
@@ -257,6 +342,7 @@ process_command(command_t command)
   node->next = node->prev = NULL;
   node->pid = -1;
   node->before = NULL;
+  node->before_size = 0;
 
   // new list node
   list_node *list = (list_node *)checked_malloc(sizeof(list_node));
@@ -264,11 +350,67 @@ process_command(command_t command)
   list->write_list = list->read_list = NULL;
   list->write_size = list->read_size = 0;
   list->next = list->prev = NULL;
-
   process_dependencies(list, command);
+  check_dependencies(list);
+
+  // push to global dependencies linked list
+  if (depend_head) {
+    list->next = depend_head;
+    depend_head->prev = list;
+  }
+  depend_head = list;
+
   return node;
 }
 
+dependency_graph_t
+create_graph(command_stream_t stream)
+{
+  dependency_graph_t graph = (dependency_graph *)checked_malloc(sizeof(dependency_graph));
+  graph->no_dependencies = graph->dependencies = NULL;
+  stream->cursor = stream->head;
+  // process commands
+  while (stream->cursor)
+  {
+    graph_node *new_node = process_command(stream->cursor->command);
+    if (new_node->before == NULL) {
+      // no dependencies
+      if (graph->no_dependencies) {
+        graph_node *old_node = graph->no_dependencies;
+        while (old_node->next) {
+          old_node = old_node->next;
+        }
+        new_node->prev = old_node;
+        old_node->next = new_node;
+      } else {
+        graph->no_dependencies = new_node;
+      }
+    } else {
+      // dependencies
+      if (graph->dependencies) {
+        graph_node *old_node = graph->dependencies;
+        while (old_node->next) {
+          old_node = old_node->next;
+        }
+        new_node->prev = old_node;
+        old_node->next = new_node;
+      } else {
+        graph->dependencies = new_node;
+      }
+    }
+    stream->cursor = stream->cursor->next;
+  }
+
+  if (DEBUG) {
+    printf("created dependency graph\n\n");
+    printf("\nno dependencies\n\n");
+    print_dependencies(graph->no_dependencies);
+    printf("\ndependencies\n\n");
+    print_dependencies(graph->dependencies);
+  }
+
+  return graph;
+}
 
 void
 execute_graph(dependency_graph_t graph)

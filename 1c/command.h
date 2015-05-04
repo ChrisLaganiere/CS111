@@ -33,3 +33,5 @@ void execute_command (command_t, bool);
 int command_status (command_t);
 
 dependency_graph_t create_graph(command_stream_t stream);
+
+void execute_graph(dependency_graph_t graph);

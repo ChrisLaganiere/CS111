@@ -82,6 +82,7 @@ typedef struct graph_node
 {
   command_t root;
   struct graph_node **before;
+  int before_size;
   pid_t pid;
 
   struct graph_node *next;
