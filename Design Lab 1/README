@@ -1,0 +1,32 @@
+Chris Laganiere: 404300154
+Juan Caesar Susilo: 004282294
+
+
+Steps in our 1a implementation:
+
+1. Store the char input stream into a dynamically allocated c string.
+
+2. Tokenize the c string into a linked list of tokens, (a struct that we defined) throwing an error if any invalid characters or sequences are found. 
+
+3. Check for and throw an error in the case of invalid syntax in the tokens linked list. Also handle newlines, which can be equivalent to sequences in some cases, and ignored in others.
+
+4. Turn the tokens linked list into a command stream (made of multiple linked root nodes of command struct trees).
+   We used two stacks (token stack and command stack) to properly build the command trees, reversing the order of the resulting command tree root node linked list.
+
+5. Read command streams by returning the first command struct tree root node and advancing a cursor.
+
+
+
+Steps in the 1b implementation:
+
+Commands which are already organized into command struct trees are executed appropriately with input/output, exiting with the correct exit status, with logic appropriate for each command type. We wrote a whole new file of test cases for our implementation which all pass. There's no limitations on this part of the lab.
+
+
+
+Steps in the 1c implementation:
+
+Time travel works as in the spec, running faster if there is enough inherent parallelism in the test cases, but always respecting dependencies. We made another set of test cases testing dependencies between command trees, these run successfully. Dependencies are checked such that no commands are run before commands which will conflict with them through one of the three race conditions: reading after a write, reading before a write, and writing before a write.
+
+
+
+We don't know of any limitations with our implementation. All test cases pass, even some new ones we thought of and included.
