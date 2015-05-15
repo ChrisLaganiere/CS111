@@ -9,7 +9,7 @@
 # the end of the file.
 
 # Partner 1
-Name: ChrisLaganiere
+Name: Chris Laganiere
 Student ID: 404300154
 Email: ChrisLaganiere@ucla.edu
 
@@ -20,3 +20,5 @@ Email: juansusilo@gmail.com
 
 
 # Add any other information you'd like us to have below this line.
+
+We don't know of any limitations with the solution, all test cases pass.

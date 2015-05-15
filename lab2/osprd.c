@@ -17,7 +17,7 @@
 #include "spinlock.h"
 #include "osprd.h"
 
-#define DEBUG 1
+#define DEBUG 0
 
 /* The size of an OSPRD sector. */
 #define SECTOR_SIZE	512
@@ -46,6 +46,19 @@ MODULE_AUTHOR("Chris Laganiere & Juan Susilo");
 static int nsectors = 32;
 module_param(nsectors, int, 0);
 
+typedef struct read_node
+{
+  pid_t read_pid;
+  struct read_node* next;
+  struct read_node* prev;
+} read_node;
+
+typedef struct exited_node
+{
+  int exited_ticket;
+  struct exited_node* next;
+  struct exited_node* prev;
+} exited_node;
 
 /* The internal representation of our device. */
 typedef struct osprd_info {
@@ -68,13 +81,13 @@ typedef struct osprd_info {
 	         in detecting deadlock. */
 
 	int read_size;
-	pid_t *read_list;
+	read_node *read_head;
 
-	int write_size;
-	pid_t *write_list;
+	int write_taken;
+	pid_t write_pid;
 
 	int exited_size;
-	int *exited_tickets;
+	exited_node *exited_head;
 
 	// The following elements are used internally; you don't need
 	// to understand them.
@@ -90,52 +103,121 @@ static osprd_info_t osprds[NOSPRD];
 
 // Our helper functions
 
-void * kcustomrealloc(void* ptr, size_t size, size_t old_size)
+void add_to_read_list(pid_t read_pid, osprd_info_t *info)
 {
-    void* returnptr = kmalloc(size, GFP_ATOMIC);
-    memcpy(returnptr, ptr, old_size);
-    // int i = 0;
-    // while(i < number_of_elements)
-    //     returnptr[i] = ptr[i];
-    kfree(ptr);
-    return returnptr;
-}
+	osprd_info_t *d = info;
+	read_node *new_node = (read_node *)kmalloc(sizeof(read_node), GFP_ATOMIC);
+	new_node->read_pid = read_pid;
+	read_node *head = d->read_head;
 
-void add_to_list(pid_t **list, pid_t new_pid, int list_size)
-{
 	if (DEBUG) {
-		eprintk("Adding to list at index %d\n", list_size);
+		while (head) {
+			eprintk("(before add) found a reader: %d \n", head->read_pid);
+			head = head->next;
+		}
+		head = d->read_head;
 	}
-	pid_t *new_list = kcustomrealloc(*list, (list_size + 1)*sizeof(pid_t), list_size*sizeof(pid_t));
-	new_list[list_size] = new_pid;
-	*list = new_list;
-}
 
-void remove_from_list(pid_t **list, pid_t old_pid, int list_size)
-{
-	pid_t *old_list = *list;
-	int list_idx = 0;
-	for (list_idx = 0; list_idx < list_size; list_idx++) {
-		if (old_list[list_idx] == old_pid) {
-			if (DEBUG) {
-				eprintk("Removing from list at index %d\n", list_idx);
-			}
-			pid_t *new_list = kmalloc((list_size - 1)*sizeof(pid_t), GFP_ATOMIC);
-			int new_list_idx = 0;
-			int old_index = 0;
-			for (old_index = 0; old_index < list_size; old_index++) {
-				if (old_index == list_idx) {
-					// element to remove
-					continue;
-				} else {
-					new_list[new_list_idx] = old_list[old_index];
-					new_list_idx++;
-				}
-			}
-			*list = new_list;
-			break;
+	if (head) {
+		new_node->next = head;
+		head->prev = new_node;
+	} else {
+		new_node->next = NULL;
+	}
+	new_node->prev = NULL;
+	d->read_head = new_node;
+
+	if (DEBUG) {
+		head = d->read_head;
+		while (head) {
+			eprintk("(after add) found a reader: %d \n", head->read_pid);
+			head = head->next;
 		}
 	}
+
+	d->read_size++;
+}
+
+void remove_from_read_list(pid_t read_pid, osprd_info_t *info)
+{
+	osprd_info_t *d = info;
+	read_node *head = d->read_head;
+
+	if (DEBUG) {
+		while (head) {
+			eprintk("(before remove) found a reader: %d \n", head->read_pid);
+			head = head->next;
+		}
+		head = d->read_head;
+	}
+
+	while (head) {
+		if (head->read_pid == read_pid) {
+			if (DEBUG) {
+				eprintk("removing reader: %d\n", head->read_pid);
+			}
+
+			if (head->prev) {
+				read_node *old_prev = head->prev;
+				old_prev->next = head->next;
+			} else if (head == d->read_head) {
+				d->read_head = NULL;
+			}
+
+			if (head->next) {
+				read_node *old_next = head->next;
+				old_next->prev = head->prev;
+			}
+			kfree(head);
+			d->read_size--;
+			break;
+		} else {
+			head = head->next;
+		}
+	}
+
+	if (DEBUG) {
+		head = d->read_head;
+		while (head) {
+			eprintk("(after remove) found a reader: %d \n", head->read_pid);
+			head = head->next;
+		}
+	}
+}
+
+void add_to_exited_list(int exited_ticket, osprd_info_t *info)
+{
+	osprd_info_t *d = info;
+	exited_node *new_node = (exited_node *)kmalloc(sizeof(exited_node), GFP_ATOMIC);
+	new_node->exited_ticket = exited_ticket;
+	exited_node *head = d->exited_head;
+
+	if (DEBUG) {
+		while (head) {
+			eprintk("(before add) found an exited: %d \n", head->exited_ticket);
+			head = head->next;
+		}
+		head = d->exited_head;
+	}
+
+	if (head) {
+		new_node->next = head;
+		head->prev = new_node;
+	} else {
+		new_node->next = NULL;
+	}
+	new_node->prev = NULL;
+	d->exited_head = new_node;
+
+	if (DEBUG) {
+		head = d->exited_head;
+		while (head) {
+			eprintk("(after add) found an exited: %d \n", head->exited_ticket);
+			head = head->next;
+		}
+	}
+
+	d->exited_size++;
 }
 
 // Declare useful helper functions
@@ -185,6 +267,12 @@ static void osprd_process_request(osprd_info_t *d, struct request *req)
 	// 	eprintk("Processing request\n");
 	// }
 
+
+    if((req->sector + req->current_nr_sectors) > nsectors) {
+ 	    eprintk("Sector doesn't exist\n");
+        end_request(req,0);
+	}
+
 	// requestType returns 0 for read, 1 for write
     unsigned int requestType = rq_data_dir(req);
     
@@ -195,6 +283,9 @@ static void osprd_process_request(osprd_info_t *d, struct request *req)
         memcpy(req->buffer,ptr,req->current_nr_sectors*SECTOR_SIZE);
     } else if (requestType == WRITE){
         memcpy(ptr,req->buffer,req->current_nr_sectors*SECTOR_SIZE);
+    } else {
+ 	    eprintk("Command doesn't exist\n");
+        end_request(req,0);
     }
 
 	end_request(req, 1);
@@ -235,11 +326,28 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 			// remove pid from R/W lists
 			osp_spin_lock(&d->mutex);
 			if (filp_writable) {
-				remove_from_list(&d->write_list, current->pid, d->write_size);
-				d->write_size--;
+				d->write_pid = -1;
+				d->write_taken = 0;
 			} else {
-				remove_from_list(&d->read_list, current->pid, d->read_size);
-				d->read_size--;
+				remove_from_read_list(current->pid, d);
+			}
+
+			// check for exited tickets
+			exited_node *exited = d->exited_head;
+			while (exited)
+			{
+				if (DEBUG) {
+					eprintk("checking exited: %d to match %d \n", exited->exited_ticket, d->ticket_tail);
+				}
+				if (exited->exited_ticket == d->ticket_tail) {
+					if (DEBUG) {
+						eprintk("Found exited ticket: %d\n", exited->exited_ticket);
+					}
+					d->ticket_tail++;
+					exited = d->exited_head;
+				} else {
+					exited = exited->next;
+				}
 			}
 
 			filp->f_flags &= ~F_OSPRD_LOCKED;
@@ -247,8 +355,6 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 
 			wake_up_all(&d->blockq);
 		}
-
-		
 
 		if (DEBUG) {
 			eprintk("Finished release\n");
@@ -273,21 +379,43 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 	osprd_info_t *d = file2osprd(filp);	// device info
 	int r = 0;			// return value: initially 0
 
+	// is file open for writing?
+	int filp_writable = (filp->f_mode & FMODE_WRITE) != 0;
+	int event_result = 0;
+	int num_readers = 0;
+
 	if (!d) {
 		return -ERESTARTSYS;
 	}
-
-	// is file open for writing?
-	int filp_writable = (filp->f_mode & FMODE_WRITE) != 0;
-
-	// This line avoids compiler warnings; you may remove it.
-	(void) filp_writable, (void) d;
 
 	// Set 'r' to the ioctl's return value: 0 on success, negative on error
 
 	if (cmd == OSPRDIOCACQUIRE) {
 		if (DEBUG) {
 			eprintk("Attempting to acquire\n");
+		}
+
+		// check if lock would cause deadlock
+		if (d->write_pid == current->pid) {
+			if (DEBUG) {
+				eprintk("deadlock detected\n");
+			}
+			return -EDEADLK;
+		}
+		if (filp_writable) {
+			if (DEBUG) {
+				eprintk("num_readers: %d\n", num_readers);
+			}
+			read_node* reader = d->read_head;
+			while (reader) {
+				if (reader->read_pid == current->pid) {
+					if (DEBUG) {
+						eprintk("deadlock detected\n");
+					}
+					return -EDEADLK;
+				}
+				reader = reader->next;
+			}
 		}
 
 		// take a ticket
@@ -297,76 +425,46 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		osp_spin_unlock(&d->mutex);
 
 		// block until other requests finish
-		int event_result = 0;
 		if (filp_writable) {
 			// open to write
-			while(d->write_size != 0 || d->read_size != 0 || my_ticket != d->ticket_tail)
-            {
-                int res = wait_event_interruptible(d->blockq, 1);
-                if (res == -ERESTARTSYS) {
-	                return -ERESTARTSYS;
-                }
-		        schedule();
-            }
-			// event_result = wait_event_interruptible(d->blockq, (d->ticket_tail == my_ticket && d->read_size == 0 && d->write_size == 0));
+			event_result = wait_event_interruptible(d->blockq, (d->ticket_tail == my_ticket && d->read_size == 0 && d->write_taken == 0));
+			if (DEBUG) {
+				eprintk("wait_event finished\n");
+			}
 		} else {
 			// open to read
-			while(d->write_size != 0 || my_ticket != d->ticket_tail)
-            {
-            	int res = wait_event_interruptible(d->blockq,1);
-            	if(res == -ERESTARTSYS)
-            		return -ERESTARTSYS;
-            	schedule(); 
-            }
-			// event_result = wait_event_interruptible(d->blockq, (d->ticket_tail == my_ticket && d->write_size == 0));
+			event_result = wait_event_interruptible(d->blockq, (d->ticket_tail >= my_ticket && d->write_taken == 0));
+			if (DEBUG) {
+				eprintk("wait_event finished\n");
+			}
 		}
 
 		if (event_result == -ERESTARTSYS) {
 			// thread should exit immediately and add ticket number to exited
 			osp_spin_lock(&d->mutex);
-			d->exited_tickets = (int *)kcustomrealloc(d->exited_tickets, (d->exited_size + 1)*sizeof(int), d->exited_size*sizeof(int));
-			d->exited_tickets[d->exited_size] = my_ticket;
-			d->exited_size++;
+			add_to_exited_list(my_ticket, d);
 			osp_spin_unlock(&d->mutex);
 			return -ERESTARTSYS;
 		}
 
-		// check if lock would cause deadlock
-		osp_spin_lock(&d->mutex);
-		int num_writers = d->write_size;
-		if (DEBUG) {
-			eprintk("num_writers: %d\n", num_writers);
-		}
-		int list_index = 0;
-		for (list_index = 0; list_index < num_writers; list_index++) {
-			if (d->write_list[list_index] == current->pid) {
-				return -EDEADLK;
-			}
-		}
-		if (filp_writable) {
-			int num_readers = d->read_size;
-			if (DEBUG) {
-				eprintk("num_readers: %d\n", num_readers);
-			}
-			for (list_index = 0; list_index < num_readers; list_index++) {
-				if (d->read_list[list_index] == current->pid) {
-					return -EDEADLK;
-				}
-			}
-		}
-
 		// add pid to R/W lists
+		osp_spin_lock(&d->mutex);
 		if (filp_writable) {
-			add_to_list(&d->write_list, current->pid, d->write_size);
-			d->write_size++;
+			d->write_pid = current->pid;
+			d->write_taken = 1;
 		} else {
-			add_to_list(&d->read_list, current->pid, d->read_size);
-			d->read_size++;
+			add_to_read_list(current->pid, d);
 		}
 
 		filp->f_flags |= F_OSPRD_LOCKED;
 		d->ticket_tail++;
+
+		// check if next ticket exited already
 		osp_spin_unlock(&d->mutex);
+
+		if (DEBUG) {
+			eprintk("Finished acquire\n");
+		}
 
 		// EXERCISE: Lock the ramdisk.
 		//
@@ -404,9 +502,6 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// be protected by a spinlock; which ones?)
 
 		// Your code here (instead of the next two lines).
-		if (DEBUG) {
-			eprintk("Finished acquire\n");
-		}
 		// r = -ENOTTY;
 
 	} else if (cmd == OSPRDIOCTRYACQUIRE) {
@@ -419,31 +514,75 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// Otherwise, if we can grant the lock request, return 0.
 
 		// Your code here (instead of the next two lines).
-		eprintk("Attempting to try acquire\n");
+		if (DEBUG) {
+			eprintk("Attempting to try acquire\n");
+		}
 
+		// avoid block
+		if (filp_writable) {
+			// open to write
+			if (d->write_taken != 0 || d->read_size != 0) {
+				return -EBUSY;
+			}
+			osp_spin_lock(&d->mutex);
+			d->write_pid = current->pid;
+			d->write_taken = 1;
+		} else {
+			// open to read
+			if (d->write_taken != 0) {
+				return -EBUSY;
+			}
+			osp_spin_lock(&d->mutex);
+			add_to_read_list(current->pid, d);
+		}
 
-		eprintk("Finished try acquire\n");
-		// r = -ENOTTY;
+		d->ticket_head++;
+		d->ticket_tail++;
+		filp->f_flags |= F_OSPRD_LOCKED;
+		osp_spin_unlock(&d->mutex);
 
 	} else if (cmd == OSPRDIOCRELEASE) {
 		if (DEBUG) {
 			eprintk("Attempting to release\n");
 		}
 
+		if ((filp->f_flags & F_OSPRD_LOCKED) == 0) {
+			return -EINVAL;
+		}
+
 		// remove pid from R/W lists
 		osp_spin_lock(&d->mutex);
 		if (filp_writable) {
-			remove_from_list(&d->write_list, current->pid, d->write_size);
-			d->write_size--;
+			d->write_pid = -1;
+			d->write_taken = 0;
 		} else {
-			remove_from_list(&d->read_list, current->pid, d->read_size);
-			d->read_size--;
+			remove_from_read_list(current->pid, d);
 		}
 
-		filp->f_flags &= ~F_OSPRD_LOCKED;
+		// check for exited tickets
+		exited_node *exited = d->exited_head;
+		while (exited)
+		{
+			eprintk("checking exited: %d to match %d \n", exited->exited_ticket, d->ticket_tail);
+			if (exited->exited_ticket == d->ticket_tail) {
+				if (DEBUG) {
+					eprintk("Found exited ticket: %d\n", exited->exited_ticket);
+				}
+				d->ticket_tail++;
+				exited = d->exited_head;
+			} else {
+				exited = exited->next;
+			}
+		}
+
+		filp->f_flags ^= F_OSPRD_LOCKED;
 		osp_spin_unlock(&d->mutex);
 
 		wake_up_all(&d->blockq);
+
+		if (DEBUG) {
+			eprintk("Finished release\n");
+		}
 
 		// can acquire lock
 
@@ -455,9 +594,6 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// you need, and return 0.
 
 		// Your code here (instead of the next line).
-		if (DEBUG) {
-			eprintk("Finished release\n");
-		}
 		// r = -ENOTTY;
 
 	} else
@@ -474,9 +610,11 @@ static void osprd_setup(osprd_info_t *d)
 	init_waitqueue_head(&d->blockq);
 	osp_spin_lock_init(&d->mutex);
 	d->ticket_head = d->ticket_tail = 0;
-	d->read_list = d->write_list = NULL;
-	d->exited_tickets = NULL;
-	d->read_size = d->write_size = d->exited_size = 0;
+	d->write_pid = -1;
+	d->write_taken = 0;
+	d->read_head = NULL;
+	d->exited_head = NULL;
+	d->read_size = d->exited_size = 0;
 	/* Add code here if you add fields to osprd_info_t. */
 }
 
