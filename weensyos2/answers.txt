@@ -1,0 +1,51 @@
+Name:
+UCLA ID:
+
+Collaborators:
+
+-------------------------------------------------------------------------------
+
+Response to Exercise 1:
+
+The name of the scheduling algorithm is: Round-robin. This algoriths just loops through the processes in order by pid (1234....1234)
+
+
+(Exercise 2 is a coding exercise)
+I implemented exercise 2 so that pids represent priorities of the processes, with smaller pids being higher priorities. I just find the process with the smallest pid which is still runnable and run that.
+I changed schedule() in schedos-kern.c to implement the scheduling algorithm and modified start() in schedos-1.c to actually exit when it finishes.
+The output is 111...1222...2333...3444...4 as expected
+
+
+Response to Exercise 3:
+
+Average turnaround time for scheduling_algorithm 0: ((4*320) + (4*320 - 1) + (4*320 - 2) + (4*320 - 3))/4 = 1278.5 milliseconds
+Average turnaround time for scheduling_algorithm 1: (4*320 + 3*320 + 2*320 + 1*320)/4 = 800 milliseconds
+
+Average wait time for scheduling_algorithm 0: (0 + 1 + 2 + 3)/4 = 1.5 milliseconds
+Average wait time for scheduling_algorithm 1: (0 + 320 + 640 + 960)/4 = 480 milliseconds
+
+
+Exercise 4:
+
+Did you complete Exercise 4A, Exercise 4B, or both for extra credit?
+
+I did Exercise 4A. I set up schedule() in schedos-kern.c to prioritize according to a new variable in the process_t struct, p_priority, which is the priority of the process. I also implemented a new interrupt INT_SYS_USER1 in interrupt() in schedos-kern.c and proc_priority() in schedos-app.h to allow processes to set their own priorities.
+I tested this by having each process initialize with priority 5 and in start() setting their priority to 2, 2, 4, and 3 respectively such that output was sorted by priorities correctly (like 333...3444...41212...1212). You can see this happen if you set scheduling_algorithm to 2.
+
+
+Exercise 5: The first timer interrupt I can see in the spec's output happens after 19 characters are printed.
+The '4' is missing after this '3', indicating that a timer interrupt interrupted process 4 between setting the character in cursorpos and incrementing cursorpos, such that the next process scheduled overwrites the character that process 4 printed and the number '4' is skipped. This occurs 1234123412341234123[here!]1
+
+
+(Exercise 6 is a coding exercise)
+I implemented a lock using atomic_swap so that both operations represented by *cursorpos++ = PRINTCHAR; occur within a critical section.
+Each process spins in a loop until 0 is returned by atomic_swap with lock, so that only one process can print a character and increment the cursorpos at a time.
+There are no more skipped characters so the output is again 4*320 characters long. The numbers are not all in order because the timer interrupt still interrupts them often, but no longer are characters skipped due to the race condition in the spec.
+I changed start() in schedos-1.c to use atomic_swap with a lock, which I defined in schedos.h and globally in schedos-symbols.ld. I also initialize this lock to '0' in start() in schedos-kern.c.
+
+
+Anything else you'd like us to know:
+
+
+
+Extra credit exercises:
