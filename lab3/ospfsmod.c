@@ -452,8 +452,10 @@ ospfs_dir_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		 * the loop.  For now we do this all the time.
 		 *
 		 * EXERCISE: Your code here */
-		r = 1;		/* Fix me! */
-		break;		/* Fix me! */
+		if ((f_pos - 2)*OSPFS_DIRENTRY_SIZE >= dir_oi->oi_size) {
+			r = 1;
+			break;
+		}
 
 		/* Get a pointer to the next entry (od) in the directory.
 		 * The file system interprets the contents of a
@@ -476,6 +478,30 @@ ospfs_dir_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		 */
 
 		/* EXERCISE: Your code here */
+
+		od = ospfs_inode_data(dir_oi, (f_pos - 2)*OSPFS_DIRENTRY_SIZE);
+		if (od->od_ino == 0) {
+			// blank directory entry
+			f_pos++;
+			continue;
+		}
+
+		entry_oi = ospfs_inode(od->od_ino);
+		unsigned fill_type = 0;
+		if (entry_oi->oi_ftype == OSPFS_FTYPE_REG) {
+			// regular file
+			fill_type = DT_REG;
+		} else if (entry_oi->oi_ftype == OSPFS_FTYPE_DIR) {
+			// directory
+			fill_type = DT_DIR;
+		} else if (entry_oi->oi_ftype == OSPFS_FTYPE_SYMLINK) {
+			// symbolic link
+			fill_type = DT_LNK;
+		}
+		ok_so_far = filldir(dirent, od->od_name, strlen(od->od_name), f_pos, od->od_ino, fill_type);
+		if (ok_so_far >= 0) {
+			f_pos++;
+		}
 	}
 
 	// Save the file position and return!
@@ -552,7 +578,23 @@ ospfs_unlink(struct inode *dirino, struct dentry *dentry)
 static uint32_t
 allocate_block(void)
 {
+	int blocknum;
+	int bitnum;
+	uint32_t bitblock;
+
 	/* EXERCISE: Your code here */
+	// iterate through each bit of each bitmap block (2 through X-1, where X is ospfs_super->os_firstinob)
+	for (blocknum = OSPFS_FREEMAP_BLK; blocknum < ospfs_super->os_firstinob; blocknum++) {
+		bitblock = ospfs_block(blocknum);
+		for (bitnum = 0; bitnum < OSPFS_BLKBITSIZE; bitnum++) {
+			if (bitvector_test(bitblock, bitnum) == 1) {
+				// found a free block
+				bitvector_clear(bitblock, bitnum);
+				return OSPFS_BLKBITSIZE*bitnum + bitnum;
+			}
+		}
+	}
+	// didn't find a free block
 	return 0;
 }
 
@@ -572,6 +614,14 @@ static void
 free_block(uint32_t blockno)
 {
 	/* EXERCISE: Your code here */
+	uint32_t bitblock;
+	int bitblocknum = blockno % OSPFS_BLKBITSIZE;
+	int bitnum = blockno - bitblocknum;
+	if (blockno > OSPFS_FREEMAP_BLK && bitblocknum + OSPFS_FREEMAP_BLK < ospfs_super->os_firstinob) {
+		// valid bit to set (unallocate)
+		bitblock = ospfs_block(bitblocknum);
+		bitvector_set(bitblocknum, bitnum);
+	}
 }
 
 
@@ -846,6 +896,10 @@ ospfs_read(struct file *filp, char __user *buffer, size_t count, loff_t *f_pos)
 	// Change 'count' so we never read past the end of the file.
 	/* EXERCISE: Your code here */
 
+	if (count > oi->oi_size - *f_pos) {
+		count = oi->oi_size - *f_pos;	
+	}
+
 	// Copy the data to user block by block
 	while (amount < count && retval >= 0) {
 		uint32_t blockno = ospfs_inode_blockno(oi, *f_pos);
@@ -865,12 +919,22 @@ ospfs_read(struct file *filp, char __user *buffer, size_t count, loff_t *f_pos)
 		// into user space.
 		// Use variable 'n' to track number of bytes moved.
 		/* EXERCISE: Your code here */
-		retval = -EIO; // Replace these lines
-		goto done;
+		// retval = -EIO; // Replace these lines
+		// goto done;
 
-		buffer += n;
-		amount += n;
-		*f_pos += n;
+		uint32_t start_pos = *f_pos % OSPFS_BLKSIZE;
+		n = OSPFS_BLKSIZE - start_pos;
+		if (n > count - amount) {
+			n = count - amount;
+		}
+		if (copy_to_user(buffer, &data[start_pos], n) < 0) {
+			// something went wrong
+			retval = -EFAULT;
+		} else {
+			buffer += n;
+			amount += n;
+			*f_pos += n;
+		}
 	}
 
     done:
