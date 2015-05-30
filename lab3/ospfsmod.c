@@ -650,14 +650,16 @@ free_block(uint32_t blockno)
 // Inputs:  b -- the zero-based index of the file block (e.g., 0 for the first
 //		 block, 1 for the second, etc.)
 // Returns: 0 if block index 'b' requires using the doubly indirect
-//	       block, -1 if it does not.
+//	       block, -1 if it does not. 
 //
 // EXERCISE: Fill in this function.
 
 static int32_t
 indir2_index(uint32_t b)
 {
-	// Your code here.
+	if (b >= OSPFS_NDIRECT + OSPFS_NINDIRECT) {
+		return 0;
+	}
 	return -1;
 }
 
@@ -676,8 +678,13 @@ indir2_index(uint32_t b)
 static int32_t
 indir_index(uint32_t b)
 {
-	// Your code here.
-	return -1;
+	if (b < OSPFS_NDIRECT) {
+		return -1;
+	} else if (b < OSPFS_NDIRECT + OSPFS_NINDIRECT) {
+		return 0;
+	} else {
+		return (b - (OSPFS_NDIRECT + OSPFS_NINDIRECT)) / OSPFS_NINDIRECT;
+	}
 }
 
 
@@ -693,8 +700,10 @@ indir_index(uint32_t b)
 static int32_t
 direct_index(uint32_t b)
 {
-	// Your code here.
-	return -1;
+	if (b < OSPFS_NDIRECT) {
+		return b;
+	}
+	return (b - OSPFS_NDIRECT) % OSPFS_NINDIRECT;
 }
 
 
@@ -736,10 +745,164 @@ add_block(ospfs_inode_t *oi)
 	uint32_t n = ospfs_size2nblocks(oi->oi_size);
 
 	// keep track of allocations to free in case of -ENOSPC
-	uint32_t *allocated[2] = { 0, 0 };
+	uint32_t *allocated[3] = { 0, 0, 0 };
 
 	/* EXERCISE: Your code here */
-	return -EIO; // Replace this line
+	// return -EIO; // Replace this line
+
+	// return value
+	int retval = 0;
+	// blocks
+	uint32_t *data_block = NULL, *indir_block = NULL, *indir2_block = NULL;
+	// actual memory block numbers of the blocks
+	uint32_t data_block_num = 0, indir_block_num = 0, indir2_block_num = 0;
+	// indexes of the blocks in the inode
+	uint32_t dir_idx = 0, indir_idx = 0, indir2_idx = 0;
+	uint32_t zero = 0;
+
+	if (n >= OSPFS_MAXFILEBLKS) {
+		// requested more blocks than allowed
+		return -EIO;
+	}
+
+	// allocate new block for oi
+	data_block_num = allocate_block();
+	if (data_block_num == 0) {
+		// disk full
+		return -ENOSPC;
+	}
+	data_block = ospfs_block(data_block_num);
+	allocated[0] = data_block;
+
+	// zero out new block
+	if (copy_from_user(data_block, &zero, OSPFS_BLKSIZE) != 0) {
+		retval = -EIO;
+		goto freeblocks;
+	}
+
+	dir_idx = direct_index(n);
+	indir_idx = indir_index(n);
+	indir2_idx = indir2_index(n);
+
+	if (indir_idx < 0) {
+		// direct block
+
+		oi->oi_direct[indir_idx] = data_block_num;
+	} else if (indir2_idx < 0) {
+		// indirect block
+
+		if (dir_idx == 0) {
+			// first in the new indirect block
+			indir_block_num = allocate_block();
+			if (indir_block_num == 0) {
+				// disk full
+				retval = -ENOSPC;
+				goto freeblocks;
+			}
+			oi->oi_indirect = indir_block_num;
+			indir_block = ospfs_block(indir_block_num);
+			allocated[1] = indir_block;
+			// zero out new indirect block
+			if (copy_from_user(indir_block, &zero, OSPFS_BLKSIZE) != 0) {
+				retval = -EIO;
+				goto freeblocks;
+			}
+		} else {
+			// existing indirect block
+			indir_block_num = oi->oi_indirect;
+			indir_block = ospfs_block(indir_block_num);
+		}
+
+		// copy direct block number to indirect
+		if (copy_from_user((indir_block + dir_idx), &data_block_num, 4) != 0) {
+			retval = -EIO;
+			goto freeblocks;
+		}
+	} else {
+		// indirect2 block
+
+		// first make sure oi still has an indirect2 block
+		if (oi->oi_indirect2 <= 0) {
+			indir2_block_num = allocate_block();
+			if (indir2_block_num == 0) {
+				// disk full
+				retval = -ENOSPC;
+				goto freeblocks;
+			}
+			indir2_block = ospfs_block(indir2_block_num);
+			allocated[2] = indir2_block;
+			// zero out new indirect2 block
+			if (copy_from_user(indir2_block, &zero, OSPFS_BLKSIZE) != 0) {
+				retval = -EIO;
+				goto freeblocks;
+			}
+			oi->oi_indirect2 = indir2_block_num;
+		}
+
+		indir2_block_num = oi->oi_indirect2;
+		indir2_block = ospfs_block(indir2_block_num);
+
+		// then make sure there's an indirect block to add data_block_num to
+		if (dir_idx == 0) {
+			// first in a new indirect block
+			indir_block_num = allocate_block();
+			if (indir_block_num == 0) {
+				// disk full
+				retval = -ENOSPC;
+				goto freeblocks;
+			}
+			indir_block = ospfs_block(indir_block_num);
+			allocated[1] = indir_block;
+			// zero out new indirect block
+			if (copy_from_user(indir_block, &zero, OSPFS_BLKSIZE) != 0) {
+				retval = -EIO;
+				goto freeblocks;
+			}
+			// copy indirect block number to indirect2
+			if (copy_from_user((indir2_block + indir_idx), &indir_block_num, 4) != 0) {
+				retval = -EIO;
+				goto freeblocks;
+			}
+		} else {
+			// existing indirect block
+			if (copy_to_user(&indir_block_num, (indir2_block + indir_idx), 4) != 0) {
+				retval = -EIO;
+				goto freeblocks;
+			}
+			indir_block = ospfs_block(indir_block_num);
+		}
+
+		// copy direct block number to indirect
+		if (copy_from_user((indir_block + dir_idx), &data_block_num, 4) != 0) {
+			retval = -EIO;
+			goto freeblocks;
+		}
+	}
+
+	// successfully added a block to oi
+	oi->oi_size += OSPFS_BLKSIZE;
+
+	// free any blocks which have been allocated if error
+	freeblocks:
+	if (retval != 0) {
+		if (allocated[0]) {
+			// free data block
+			free_block(allocated[0]);
+			allocated[0] = 0;
+		}
+		if (allocated[1]) {
+			// free indirect block
+			free_block(allocated[1]);
+			allocated[1] = 0;
+		}
+		if (allocated[2]) {
+			// free indirect2 block
+			free_block(allocated[2]);
+			allocated[2] = 0;
+		}
+	}
+
+	return retval;
 }
 
 
@@ -772,7 +935,95 @@ remove_block(ospfs_inode_t *oi)
 	uint32_t n = ospfs_size2nblocks(oi->oi_size);
 
 	/* EXERCISE: Your code here */
-	return -EIO; // Replace this line
+	// return -EIO; // Replace this line
+
+	// blocks
+	uint32_t *data_block = NULL, *indir_block = NULL, *indir2_block = NULL;
+	// actual memory block numbers of the blocks
+	uint32_t data_block_num = 0, indir_block_num = 0, indir2_block_num = 0;
+	// indexes of the blocks in the inode
+	uint32_t dir_idx = 0, indir_idx = 0, indir2_idx = 0;
+	uint32_t zero = 0;
+
+	if (n == 0) {
+		return -EIO;
+	}
+
+	dir_idx = direct_index(n);
+	indir_idx = indir_index(n);
+	indir2_idx = indir2_index(n);
+
+	if (indir_idx < 0) {
+		// direct block
+
+		// get and clear direct index
+		if (copy_to_user(&data_block_num, oi->oi_direct[dir_idx], 4) != 0) {
+			return -EIO;
+		}
+		if (copy_from_user(oi->oi_direct[dir_idx], &zero, 4) != 0) {
+			return -EIO;
+		}
+	} else if (indir2_idx < 0) {
+		// indirect block
+
+		indir_block_num = oi->oi_indirect;
+		indir_block = ospfs_block(indir_block_num);
+		// get and clear direct index
+		if (copy_to_user(&data_block_num, indir_block + dir_idx, 4) != 0) {
+			return -EIO;
+		}
+		if (copy_from_user(indir_block + dir_idx, &zero, 4) != 0) {
+			return -EIO;
+		}
+
+		// free indirect block if not needed anymore
+		if (dir_idx == 0) {
+			free_block(indir_block);
+			indir_block = 0;
+			oi->oi_indirect = 0;
+		}
+	} else {
+		// indirect2 block
+
+		indir2_block_num = oi->oi_indirect2;
+		indir2_block = ospfs_block(indir2_block_num);
+		if (copy_to_user(&indir_block_num, indir2_block + indir_idx, 4) != 0) {
+			return -EIO;
+		}
+		indir_block = ospfs_block(indir_block_num);
+
+		// get and clear direct index
+		if (copy_to_user(&data_block_num, indir_block + dir_idx, 4) != 0) {
+			return -EIO;
+		}
+		if (copy_from_user(indir_block + dir_idx, &zero, 4) != 0) {
+			return -EIO;
+		}
+
+		// free indirect block if not needed anymore
+		if (dir_idx == 0) {
+			free_block(indir_block);
+			indir_block = 0;
+			if (copy_from_user(indir2_block + indir_idx, &zero, 4) != 0) {
+				return -EIO;
+			}
+		}
+
+		// free indirect2 block if not needed anymore
+		if (indir_idx == 0) {
+			free_block(indir2_block);
+			indir2_block = 0;
+			oi->oi_indirect2 = 0;
+		}
+	}
+
+	// should have direct block number at this point
+	data_block = ospfs_block(data_block_num);
+	free_block(data_block);
+	data_block = 0;
+	oi->oi_size -= OSPFS_BLKSIZE;
+
+	return 0;
 }
 
 
