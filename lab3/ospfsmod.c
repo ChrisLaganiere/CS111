@@ -590,7 +590,7 @@ allocate_block(void)
 			if (bitvector_test(bitblock, bitnum) == 1) {
 				// found a free block
 				bitvector_clear(bitblock, bitnum);
-				return OSPFS_BLKBITSIZE*bitnum + bitnum;
+				return OSPFS_BLKBITSIZE*bitblock + bitnum;
 			}
 		}
 	}
@@ -992,8 +992,19 @@ ospfs_write(struct file *filp, const char __user *buffer, size_t count, loff_t *
 		// read user space.
 		// Keep track of the number of bytes moved in 'n'.
 		/* EXERCISE: Your code here */
-		retval = -EIO; // Replace these lines
-		goto done;
+		// retval = -EIO; // Replace these lines
+		// goto done;
+
+		uint32_t start_pos = *f_pos % OSPFS_BLKSIZE;
+		n = OSPFS_BLKSIZE - start_pos;
+		if (n > count - amount) {
+			n = count - amount;
+		}
+		if (copy_from_user(&data[start_pos], buffer, n) < 0){
+			// something went wrong
+			retval = -EFAULT;
+			goto done;
+		}
 
 		buffer += n;
 		amount += n;
@@ -1072,7 +1083,29 @@ create_blank_direntry(ospfs_inode_t *dir_oi)
 	//    entries and return one of them.
 
 	/* EXERCISE: Your code here. */
-	return ERR_PTR(-EINVAL); // Replace this line
+	// return ERR_PTR(-EINVAL); // Replace this line
+
+	uint32_t new_size;
+	ospfs_direntry_t *od;
+	int retval = 0;
+	int offset;
+	for(offset = 0; offset < dir_oi->oi_size; offset += OSPFS_DIRENTRY_SIZE) {
+    	od = ospfs_inode_data(dir_oi, offset);
+    	if(od->od_ino == 0) {
+			//found a blank direntry
+			return od;
+      	}
+    }
+
+  	// This is for allocating extra blocks for direntries
+  	new_size = (ospfs_size2nblocks(dir_oi->oi_size) + 1)*OSPFS_BLKSIZE;
+  	// Note: I don't think change_size is implemented yet
+  	retval = change_size(dir_oi, new_size);
+  	if(retval != 0){
+    	return ERR_PTR(retval);
+  	}
+  	dir_oi->oi_size = new_size;
+  	return ospfs_inode_data(dir_oi, offset);
 }
 
 // ospfs_link(src_dentry, dir, dst_dentry
@@ -1110,6 +1143,22 @@ ospfs_link(struct dentry *src_dentry, struct inode *dir, struct dentry *dst_dent
 	return -EINVAL;
 }
 
+// helper function for ospfs_create
+
+uint32_t find_free_inode()
+{
+  	uint32_t ino_number;
+  	for(ino_number = 2; ino_number < ospfs_super->os_ninodes; ino_number++) {
+      	ospfs_inode_t * current_inode = ospfs_inode(ino_number);
+      	if(current_inode->oi_nlink == 0) {
+			//found free inode
+			return ino_number;
+		}
+    }
+
+	return -1;
+}
+
 // ospfs_create
 //   Linux calls this function to create a regular file.
 //   It is the ospfs_dir_inode_ops.create callback.
@@ -1145,7 +1194,41 @@ ospfs_create(struct inode *dir, struct dentry *dentry, int mode, struct nameidat
 	ospfs_inode_t *dir_oi = ospfs_inode(dir->i_ino);
 	uint32_t entry_ino = 0;
 	/* EXERCISE: Your code here. */
-	return -EINVAL; // Replace this line
+	// return -EINVAL; // Replace this line
+
+	ospfs_inode_t * file_oi = NULL;
+	ospfs_direntry_t * new_entry = NULL;
+	uint32_t block_no = 0;
+	
+	// I implemented the helper function find free inode above.
+	// I think it's working but I don't know how to check that
+	entry_ino = find_free_inode();
+	if(entry_ino < 0) {
+	  	return -ENOSPC;
+    }
+	
+	file_oi = ospfs_inode(entry_ino);
+	if(file_oi == NULL){
+	  return -EIO;
+	}
+	
+	file_oi->oi_size = 0;
+	file_oi->oi_ftype = OSPFS_FTYPE_REG;
+	file_oi->oi_nlink = 1;
+	file_oi->oi_mode = mode;
+
+	// create_blank_direntry hasn't been fully implemented yet
+	// because of the change_size. Note: test case 9 still passes
+	// even without a fully functional create_blank_direntry
+	// function, probably because the test case for creating a file
+	// only uses directory entries in direct blocks
+	new_entry = create_blank_direntry(dir_oi);
+	if (IS_ERR(new_entry)) {
+	  	return PTR_ERR(new_entry);
+	}
+	new_entry->od_ino = entry_ino;
+	memcpy(new_entry->od_name, dentry->d_name.name, dentry->d_name.len);
+	new_entry->od_name[dentry->d_name.len] = '\0';
 
 	/* Execute this code after your function has successfully created the
 	   file.  Set entry_ino to the created file's inode number before

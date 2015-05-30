@@ -1,0 +1,46 @@
+Name: Chris Laganiere
+UCLA ID: 404-300-154
+
+-------------------------------------------------------------------------------
+
+Response to Exercise 1:
+Yes. If you replaced run(current) in INT_SYS_GETPID with schedule(), the correct pid value will be returned.
+When schedule() is called, some other process will take over and overwrite the %eax register, which stores the return value in this OS. However, the correct value for this register gets stored to the process descriptor right before schedule() is called, and when the current process eventually returns and is run again, the correct exit value is again written to the %eax register, so the correct value is returned.
+
+Exercise 2:
+I filled out do_fork() and copy_stack() in mpos-kern.c to fork a new thread correctly.
+In do_fork(), an empty process descriptor is found from the global array of process_t. This descriptor is filled out with registers and a new pid, gets its stack copied from the parent thread, and is marked as runnable. The thread is now ready to be used.
+In copy_stack(), the parent process' stack is copied to the new child process by finding the starting and top pointers for the stack on each, and copying with memcpy from the parent to the child process. The child process then gets its esp register updated, and its stack is good to go.
+
+Exercise 3:
+I set up the system to use blocking instead of polling when waiting for a process to exit, by adding a new variable blocked_proc to the process_t struct (in mpos-kern.h), and initializing this blocked_proc to -1, and changing the handlers for SYS_WAIT and SYS_EXIT to handle the BLOCKED process status, in mpos-kern.c.
+SYS_WAIT was changed to set a process' status to BLOCKED if appropriate, and SYS_EXIT was made to resume a BLOCKED process if appropriate.
+The result is that processes no longer poll, but block when waiting. So if we print 'W' as in the spec, the 'W' is only printed once.
+
+Exercise 4:
+I fixed this process cleanup bug by handling processes exiting with a ZOMBIE status. These processes finish completing and their exit status is handled, but they are never set to RUNNABLE again. So I set them to RUNNABLE in the INT_SYS_WAIT handler in mpos-kern.c.
+
+Anything else you'd like us to know:
+
+
+
+Extra credit exercises:
+
+5. the following implementation would print "10" on a correctly isolated system, but will print "11" on MiniprocOS.
+void
+start(void) {
+  int x = 0; // on the stack
+  int *volatile p_x = &x; // parent's value of x
+  volatile int *c_x = &x; // child's value of x
+  pid_t p = sys_fork();
+  if (p == 0) {
+    // child process -> will change parent's value in miniOS
+    *p_x = 1;
+    *c_x = 1;
+  } else if (p > 0) {
+    // parent process -> should be isolated! but still will have stack var changed by child in miniOS
+    sys_wait(p); // assume blocking
+  }
+  app_printf("%d", x);
+  sys_exit(0);
+}
