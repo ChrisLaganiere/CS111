@@ -20,6 +20,7 @@
 #include <pwd.h>
 #include <time.h>
 #include <limits.h>
+#include <sys/wait.h>
 #include "md5.h"
 #include "osp2p.h"
 
@@ -35,8 +36,12 @@ static int listen_port;
  * a bounded buffer that simplifies reading from and writing to peers.
  */
 
-#define TASKBUFSIZ	4096	// Size of task_t::buf
+#define TASKBUFSIZ	16384	// Size of task_t::buf
 #define FILENAMESIZ	256	// Size of task_t::filename
+#define REASONABLE_FILE_SIZE 132072
+
+ #define MD5_HASH_LEN 128 // size of MD5 hash
+ #define MD5_BUFFER 1024 // size of buffer to store MD5 hash
 
 typedef enum tasktype {		// Which type of connection is this?
 	TASK_TRACKER,		// => Tracker connection
@@ -72,6 +77,8 @@ typedef struct task {
 				// function initializes this list;
 				// task_pop_peer() removes peers from it, one
 				// at a time, if a peer misbehaves.
+
+	char check[MD5_HASH_LEN]; // md5 checksum
 } task_t;
 
 
@@ -460,7 +467,31 @@ task_t *start_download(task_t *tracker_task, const char *filename)
 	task_t *t = NULL;
 	peer_t *p;
 	size_t messagepos;
+	int namelen;
 	assert(tracker_task->type == TASK_TRACKER);
+
+	// get file checksum from tracker
+	if (strlen(filename) > 0) {
+		message("* Requesting checksum for %s\n", filename);
+		osp2p_writef(tracker_task->peer_fd, "MD5SUM %s\n", filename);
+		messagepos = read_tracker_response(tracker_task);
+
+		s1 = tracker_task->buf;
+		s2 = memchr(s1, '\n', (tracker_task->buf + messagepos) - s1);
+
+		message("* Checksum request returned: %s", &tracker_task->buf[messagepos]);
+
+		if (tracker_task->buf[messagepos] == '2') {
+			osp2p_snscanf(s1, (s2 - s1), "%s\n", tracker_task->check);
+			tracker_task->check[MD5_HASH_LEN - 1] = '\0';
+			if (strlen(tracker_task->check) > 8) {
+				message("* Checksum for %s: %s\n", filename, tracker_task->check);
+			} else {
+				message("* Invalid checksum for %s: %s\n", filename, tracker_task->check);
+				strcpy(tracker_task->check, "");
+			}
+		}
+	}
 
 	message("* Finding peers for '%s'\n", filename);
 
@@ -476,7 +507,10 @@ task_t *start_download(task_t *tracker_task, const char *filename)
 		error("* Error while allocating task");
 		goto exit;
 	}
-	strcpy(t->filename, filename);
+
+	//Dealing with potential buffer overflow
+	strncpy(t->filename, filename, FILENAMESIZ);
+	t->filename[FILENAMESIZ-1] = '\0';
 
 	// add peers
 	s1 = tracker_task->buf;
@@ -495,6 +529,38 @@ task_t *start_download(task_t *tracker_task, const char *filename)
 }
 
 
+// count_check(filename, check)
+// Number of bytes in md5 check for filename
+// Returns 0 on error
+int count_check(char *check, char *filename)
+{
+	md5_state_t state;
+	char buffer[MD5_BUFFER + 1];
+	int bytes_read, file;
+
+	md5_init(&state);
+	if ((file = open(filename, O_RDONLY))) {
+		while (1) {
+			bytes_read = (int) read(file, buffer, MD5_BUFFER);
+			buffer[MD5_BUFFER] = '\0';
+
+			if (bytes_read == 0) {
+				// EOF
+				bytes_read = md5_finish_text(&state, check, 1);
+				check[bytes_read] = '\0';
+
+				close(file);
+				return bytes_read;
+			}
+
+			md5_append(&state, (md5_byte_t*) buffer, bytes_read);
+		}
+	} else {
+		return 0;
+	}
+}
+
+
 // task_download(t, tracker_task)
 //	Downloads the file specified by the input task 't' into the current
 //	directory.  't' was created by start_download().
@@ -503,6 +569,7 @@ task_t *start_download(task_t *tracker_task, const char *filename)
 static void task_download(task_t *t, task_t *tracker_task)
 {
 	int i, ret = -1;
+	int namelen;
 	assert((!t || t->type == TASK_DOWNLOAD)
 	       && tracker_task->type == TASK_TRACKER);
 
@@ -532,10 +599,14 @@ static void task_download(task_t *t, task_t *tracker_task)
 	// "foo.txt~1~".  However, if there are 50 local files, don't download
 	// at all.
 	for (i = 0; i < 50; i++) {
-		if (i == 0)
-			strcpy(t->disk_filename, t->filename);
-		else
+		if (i == 0) {
+			t->filename[FILENAMESIZ-1] = '\0';
+		    namelen = strlen(t->filename);
+		    strncpy(t->disk_filename, t->filename, namelen);
+		    t->disk_filename[FILENAMESIZ-1] = '\0';
+		} else {
 			sprintf(t->disk_filename, "%s~%d~", t->filename, i);
+		}
 		t->disk_fd = open(t->disk_filename,
 				  O_WRONLY | O_CREAT | O_EXCL, 0666);
 		if (t->disk_fd == -1 && errno != EEXIST) {
@@ -555,6 +626,12 @@ static void task_download(task_t *t, task_t *tracker_task)
 
 	// Read the file into the task buffer from the peer,
 	// and write it from the task buffer onto disk.
+	int last_read = 0;
+	int read_history[8];
+	int h;
+	for (h = 0; h < 8; h++) {
+		read_history[h] = 100;
+	}
 	while (1) {
 		int ret = read_to_taskbuf(t->peer_fd, t);
 		if (ret == TBUF_ERROR) {
@@ -564,9 +641,30 @@ static void task_download(task_t *t, task_t *tracker_task)
 			/* End of file */
 			break;
 
+		if (t->total_written > REASONABLE_FILE_SIZE) {
+			error("* File exceeds reasonable size\n");
+			goto try_again;
+		}
+
 		ret = write_from_taskbuf(t->disk_fd, t);
 		if (ret == TBUF_ERROR) {
 			error("* Disk write error");
+			goto try_again;
+		}
+
+		// Prevent peers that are too slow from keeping connection
+		for (h = 6; h >= 0; h--) {
+			read_history[h+1] = read_history[h];
+		}
+		read_history[0] = t->total_written - last_read;
+		last_read = t->total_written;
+
+		int sum = 0;
+		for (h = 0; h < 8; h++) {
+			sum += read_history[h];
+		}
+		if (sum < 32) {
+			error("* File download too slow");
 			goto try_again;
 		}
 	}
@@ -575,6 +673,29 @@ static void task_download(task_t *t, task_t *tracker_task)
 	if (t->total_written > 0) {
 		message("* Downloaded '%s' was %lu bytes long\n",
 			t->disk_filename, (unsigned long) t->total_written);
+
+		// confirm file checksum with the one returned from the server
+		if (strlen(tracker_task->check) > 0) {
+			char file_check[MD5_HASH_LEN];
+			if (count_check(file_check, t->disk_filename) == 0) {
+				// couldn't calculate check
+				message("* Couldn't calculate checksum for %s\n", t->filename);
+				unlink(t->disk_filename);
+				task_free(t);
+				return;
+			}
+			if (strcmp(tracker_task->check, file_check) == 0) {
+				// correct check
+				message("* Confirmed checksum for %s\n", t->disk_filename);
+			} else {
+				// incorrect check
+				message("* Incorrect checksum for %s. Rejecting file\n", t->filename);
+				unlink(t->disk_filename);
+				task_free(t);
+				return;
+			}
+		}
+
 		// Inform the tracker that we now have the file,
 		// and can serve it to others!  (But ignore tracker errors.)
 		if (strcmp(t->filename, t->disk_filename) == 0) {
@@ -630,6 +751,8 @@ static task_t *task_listen(task_t *listen_task)
 //	the requested file.
 static void task_upload(task_t *t)
 {
+	char up_path[PATH_MAX], cur_path[PATH_MAX];
+
 	assert(t->type == TASK_UPLOAD);
 	// First, read the request from the peer.
 	while (1) {
@@ -648,6 +771,24 @@ static void task_upload(task_t *t)
 		goto exit;
 	}
 	t->head = t->tail = 0;
+
+	// check path is valid and in same directory to prevent attacks
+	if(strlen(t->filename) > FILENAMESIZ) {
+		error("* Invalid upload filename.\n");
+		goto exit;
+	}
+	if (!getcwd(cur_path, PATH_MAX)) {
+		error("* Can't find current directory.\n");
+		goto exit;
+	}
+	if (!realpath(t->filename, up_path)) {
+		error("* Invalid upload path.\n");
+		goto exit;
+	}
+	if (strncmp(cur_path, up_path, strlen(cur_path))) {
+		error("* Upload path outside current directory.\n");
+		goto exit;
+	}
 
 	t->disk_fd = open(t->filename, O_RDONLY);
 	if (t->disk_fd == -1) {
@@ -686,7 +827,8 @@ int main(int argc, char *argv[])
 {
 	task_t *tracker_task, *listen_task, *t;
 	struct in_addr tracker_addr;
-	int tracker_port;
+	int tracker_port, down_count;
+	pid_t ud_pid;
 	char *s;
 	const char *myalias;
 	struct passwd *pwent;
@@ -759,13 +901,41 @@ int main(int argc, char *argv[])
 	register_files(tracker_task, myalias);
 
 	// First, download files named on command line.
-	for (; argc > 1; argc--, argv++)
-		if ((t = start_download(tracker_task, argv[1])))
-			task_download(t, tracker_task);
+	down_count = 0;
+	for (; argc > 1 && !evil_mode; argc--, argv++) {
+		if ((t = start_download(tracker_task, argv[1]))) {
+	    	ud_pid = fork();
+	    	if (ud_pid < 0) {
+				error("* Download fork error");
+	    	}
+	    	if (ud_pid == 0) {
+				task_download(t, tracker_task);
+				exit(0);
+	    	} else {
+	    		down_count++;
+	    		task_free(t);
+	    	}
+	    }
+	}
+
+	while (down_count > 0) {
+		waitpid(-1, NULL, 0);
+		down_count--;
+	}
 
 	// Then accept connections from other peers and upload files to them!
-	while ((t = task_listen(listen_task)))
-		task_upload(t);
+	while ((t = task_listen(listen_task))) {
+		waitpid(-1, NULL, WNOHANG);
+		if ((ud_pid = fork()) < 0) {
+			error("* Upload fork error\n");
+		}
+		if (ud_pid == 0) {
+			task_upload(t);
+			exit(0);
+		} else {
+			task_free(t);
+		}
+	}
 
 	return 0;
 }
