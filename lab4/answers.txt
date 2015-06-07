@@ -15,7 +15,7 @@
 # Partner 1
 Name: Chris Laganiere
 Student ID: 404300154
-Email: chrislaganiere@gmail.com
+Email: chrislaganiere@ucla.edu
 
 # Partner 2 (if you're working in a team)
 Name: Juan Caesar Susilo
@@ -38,13 +38,21 @@ Similarly, the length of the task filename is checked in task_upload() before up
 We prevented bad peers from sending excessively large files (and thus exhausting our resources). In our case, we limited the size of the file to 132072 bytes (enough for the cat pictures) in task_download().
 We also checked for requests for file uploads for files which do not exist or are in another directory other than /test. This would be unsecure as a malicious attacker could steal data. We do this by finding the path of files requested for upload and comparing this to make sure it contains the current working directory (and is a subdirectory), in task_upload().
 We also check for connections which don't actually transfer any data, or do slow too slowly, as these waste resources. If files downloading from another peer do not meet a minimum transfer rate, the connection is closed. This is implemented in task_download() by saving an array of the difference between total bytes written in each iteration of a while loop. If the sum of this array is not at least a minimum value, the connection is deemed to slow and dropped.
+We also check for peers that keep connecting over and over in an attack, by preventing more than some defined max number of upload connections in main(). This prevents the program from being overloaded with a DOS style attack.
 
 # EXERCISE 3: Describe the attacks you implemented for "evil mode".  Why
 #    are they attacks?  (~3-10 sentences each)
+We implemented 3 different evil_mode attacks:
+1. filename buffer overflow attack: attempt to crash the other peer's program by overrunning their buffer for filename. This is implemented in task_download(), where the filename is set to several times the max size of the buffer.
+This is not handled by the skeleton code and will crash the program, so it's a valid attack.
+2. many connections attack: connect over and over again to a peer who is uploading a file. This is implemented in task_download(), where a while loop keeps creating new connections until the other peer can't respond anymore. This would crash the skeleton code, which makes no protections against this kind of attack, so again it is a valid attack.
+3. endless upload data file attack: overload the downloading peer by giving them endless data. This is implemented in task_upload(), where the file being sent to the other peer keeps getting reset until they stop responding.
+The skeleton code would just keep downloading the file until it ran out of space, so this attack is pretty serious.
+Our implementation guards against all 3 of these attacks.
 
 # Extra credit problems
 Extra credit problem: File Integrity with MD5 checksum.
 We implemented file checking by requesting a checksum from the tracker for each file before it starts downloading, with MD5SUM [filename]. If returned from the server, this value is saved to a new property in the task struct. 
-When a file finishes downloading, if we have the checksum returned from the server, then a confirmation checksum is calculated for the file by using 
+When a file finishes downloading, if we have the checksum returned from the server, then a confirmation checksum is calculated for the file by using md5_init, md5_append, and md5_finish_text(...,1). This is implemented in start_download() and task_download().
 
 # Add any other information you'd like us to know below this line.
