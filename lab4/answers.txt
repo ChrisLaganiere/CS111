@@ -25,21 +25,26 @@ Email: juanuni95@gmail.com
 # EXERCISE 1: What method you used to make your peer download and upload
 #    files in parallel?  (~1-3 sentences)
 We used process forking to download and upload files in parallel. For every file requested for download, a new process is forked, which begins downloading the file from any available peers. When all forked download processes finish (successfully or not) and exit, uploads begin in parallel, again by forking a new process for every upload request. This is done with waitpid given the parameter WNOHANG, so that it doesn't waste CPU time while waiting for upload requests.
+All this is implemented in the main() function.
 
 # EXERCISE 2A: What conditions did you find and fix that would have
 #    triggered a buffer overrun bug?  (~1-3 sentences each)
 We found that the strcpy function can unintentionally corrupt memory due to buffer overrun. This can be triggered by having an excessively long filename argument, and can result in a program crash or even a malicious buffer overflow attack by exploiting the overrun. We prevent this by making sure that no filename is longer than the allotted space, using strncpy to copy only the maximum allotted characters at most into the struct's filename.
+We used this technique in start_download() to set up new tasks for download, in task_download() when copying a task's filename to disk_filename, just to be safe.
+Similarly, the length of the task filename is checked in task_upload() before uploading begins, to avoid any buffer overflows.
 
 # EXERCISE 2B: What other robustness problems did you fix?  (~1-3 sentences
 #    each)
-We prevented bad peers from sending excessively large files (and thus exhausting our resource). In our case, we limited the size of the file to 132072 bytes (enough for the cat pictures).
-We also checked for requests for file uploads for files which do not exist or are in another directory other than /test. This would be unsecure as a malicious attacker could steal data. We do this by finding the path of files requested for upload and comparing this to make sure it contains the current working directory (and is a subdirectory).
-We also check for connections which don't actually transfer any data, or do slow too slowly, as these waste resources. If files downloading from another peer do not meet a minimum transfer rate, the connection is closed.
+We prevented bad peers from sending excessively large files (and thus exhausting our resources). In our case, we limited the size of the file to 132072 bytes (enough for the cat pictures) in task_download().
+We also checked for requests for file uploads for files which do not exist or are in another directory other than /test. This would be unsecure as a malicious attacker could steal data. We do this by finding the path of files requested for upload and comparing this to make sure it contains the current working directory (and is a subdirectory), in task_upload().
+We also check for connections which don't actually transfer any data, or do slow too slowly, as these waste resources. If files downloading from another peer do not meet a minimum transfer rate, the connection is closed. This is implemented in task_download() by saving an array of the difference between total bytes written in each iteration of a while loop. If the sum of this array is not at least a minimum value, the connection is deemed to slow and dropped.
 
 # EXERCISE 3: Describe the attacks you implemented for "evil mode".  Why
 #    are they attacks?  (~3-10 sentences each)
 
 # Extra credit problems
-#Extra credit problem: none
+Extra credit problem: File Integrity with MD5 checksum.
+We implemented file checking by requesting a checksum from the tracker for each file before it starts downloading, with MD5SUM [filename]. If returned from the server, this value is saved to a new property in the task struct. 
+When a file finishes downloading, if we have the checksum returned from the server, then a confirmation checksum is calculated for the file by using 
 
 # Add any other information you'd like us to know below this line.
