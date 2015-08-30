@@ -1,5 +1,5 @@
-# CS111
-Projects for CS111, Spring 2015
+# Operating Systems
+Projects Spring 2015
 
 Interesting projects: interactive shell (Lab 1), Filesystem (Lab 3), P2P client (Lab 4)
 
